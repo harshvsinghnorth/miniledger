@@ -1,0 +1,3 @@
+# Unix line endings everywhere: CI and Docker run on Linux, and Prisma
+# checksums migration files, so a line-ending change would look like an edit.
+* text=auto eol=lf

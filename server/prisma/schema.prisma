@@ -1,0 +1,47 @@
+// Prisma schema: the single description of our tables.
+// `npm run db:migrate` turns changes here into SQL files under prisma/migrations/.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  phone     String   @unique // normalized, e.g. +919876543210
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  loans     Loan[]
+
+  @@map("users")
+}
+
+model OtpCode {
+  id         Int       @id @default(autoincrement())
+  phone      String
+  codeHash   String    @map("code_hash") // hash of the OTP, never the OTP itself
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz
+  attempts   Int       @default(0) // wrong guesses so far
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz // set once used: one-time codes
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([phone])
+  @@map("otp_codes")
+}
+
+model Loan {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  user        User      @relation(fields: [userId], references: [id])
+  friendName  String    @map("friend_name")
+  amountPaise Int       @map("amount_paise") // money as whole paise, never a float
+  dueDate     DateTime  @map("due_date") @db.Date
+  repaidAt    DateTime? @map("repaid_at") @db.Timestamptz // NULL = not repaid yet
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([userId])
+  @@map("loans")
+}

@@ -13,3 +13,7 @@ server/uploads/
 
 # Expo
 .expo/
+
+# Editor settings (IntelliJ IDEA, VS Code)
+.idea/
+.vscode/

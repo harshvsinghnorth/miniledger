@@ -65,6 +65,18 @@ Phone ── PATCH /loans/7/repay ──► UPDATE … WHERE id = 7 AND user_id 
 Phone ── GET /loans/summary  ──► one SQL query: SUM(...) FILTER (WHERE ...) ──► 4 numbers
 ```
 
+### Request flow: the phone app
+
+```
+Expo Go on the phone ──scans QR──► Metro dev server on the laptop (port 8081) sends the app's JavaScript
+App starts ──► session.ts: token saved in SecureStore?
+                 yes ──► HomeScreen ── api.me(token) ──► 401? clear token ──► LoginScreen
+                 no  ──► LoginScreen
+LoginScreen ── api.requestOtp("9876543210") ──► http://<laptop>:3000/auth/request-otp
+            ── api.verifyOtp(phone, code)   ──► { token } ──► saveToken ──► HomeScreen
+<laptop> = the address Expo Go loaded the app from (Constants.expoConfig.hostUri), not typed by hand
+```
+
 ### How the tests run
 
 ```
@@ -116,7 +128,18 @@ git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 1
 | `server/tests/setup.ts` | Runs in every test file: swaps the SMS sender for a recording fake. |
 | `server/tests/helpers.ts` | `resetDatabase`, `login`, `lastOtpSent`, `authHeader`, `daysFromToday`. |
 | `server/tests/*.test.ts` | Unit tests (`money`, `dates`, `validation`, `otp`) and integration tests (`auth`, `loans`): 81 in total. |
-| `.github/workflows/ci.yml` | The GitHub Actions workflow: lint, typecheck, build and test on every push and pull request. |
+| `.github/workflows/ci.yml` | The GitHub Actions workflow: lint, typecheck, build and test the API, and typecheck and bundle the app, on every push and pull request. |
+| `app/package.json`, `app.json` | The Expo app's dependencies (Expo SDK 57, React Native 0.86, React 19.2) and its Expo settings (name, icons, plugins). |
+| `app/index.ts` | Expo's entry point: registers `App` as the root component. |
+| `app/App.tsx` | The root: loads a saved token on launch, then shows `HomeScreen` (logged in) or `LoginScreen`. |
+| `app/src/config.ts` | Works out the API address: `EXPO_PUBLIC_API_URL` if set, else the laptop Expo Go loaded the app from, port 3000. |
+| `app/src/api.ts` | The only place that calls `fetch`: adds the token, 10 s timeout, JSON only when there's a body, turns failures into `ApiError` with a readable message. Also the typed endpoint functions. |
+| `app/src/session.ts` | Saves, loads and clears the JWT in `expo-secure-store`. |
+| `app/src/theme.ts` | Shared colours and spacing. |
+| `app/src/components/Button.tsx` | `PrimaryButton` (spinner, ignores taps while loading) and `LinkButton`. |
+| `app/src/components/TextField.tsx` | A labelled input with an optional prefix (`+91`) and its error message underneath. |
+| `app/src/screens/LoginScreen.tsx` | Phone step → OTP step, resend countdown, attempts-left messages. |
+| `app/src/screens/HomeScreen.tsx` | For now: shows who's logged in (proves the saved token works) and a log-out button. |
 | `server/src/otp.ts` | Pure OTP helpers: generate a secure random code, HMAC-hash it, compare in constant time. Also the limits (5 min, 5 attempts, 30 s cooldown). |
 | `server/src/sms.ts` | The mock SMS sender: prints the code to the log. The single function a real SMS provider would replace. |
 | `server/src/auth.ts` | `signToken()` creates a JWT; `requireAuth` is the preHandler hook that protects routes and sets `request.userId`. |
@@ -280,6 +303,38 @@ The bug from the hospital project was trusting an id the client sent. Here, `use
 
 **What the tests don't cover** (say this honestly in the interview): the mobile app; a real SMS provider; token expiry after 7 days; load and performance; and we don't measure coverage. With more time: a test for expired tokens using fake timers, coverage reporting, and end-to-end tests of the app.
 
+### Milestone 5: the app and the login screen
+
+**React Native = React with phone components.** Same components, props, `useState` and `useEffect` as React on the web; `<View>` instead of `<div>`, `<Text>` instead of `<p>`, `<TextInput>` instead of `<input>`, `<Pressable>` instead of `<button>`, and styles as JavaScript objects (`StyleSheet.create`, Flexbox by default). React Native turns them into real Android views, not HTML.
+
+**Expo + Expo Go.** Expo is the officially recommended way to build React Native apps: it handles the native build setup. During development, Expo Go (a ready-made app from the Play Store) downloads our JavaScript from the laptop's Metro server and runs it, so there's no Android Studio build. *Trade-off:* Expo Go only includes Expo's own native modules; something custom would need a development build.
+
+**Expo SDK 57, not the newest 58.** npm already had SDK 58, but the Play Store's Expo Go only runs SDK 57, so the phone refused the project ("requires a newer version of Expo Go"). We checked Expo's version API (`expoGoSdkVersion: 57.0.0`), moved to 57 with `expo install --fix` (it aligns every Expo package), and re-ran `expo-doctor` (21/21). Staying on 57 also means a reviewer can open the project in the store's Expo Go.
+
+**No navigation library, on purpose.** With two screens, `App.tsx` simply shows `LoginScreen` or `HomeScreen` depending on whether there's a token. With more screens and a back stack, I'd use expo-router or React Navigation.
+
+**The API address is never typed in.** The phone can't use `localhost` (that's the phone itself). Expo Go knows which laptop it loaded the app from (`Constants.expoConfig.hostUri`, e.g. `10.37.63.146:8081`), so `config.ts` uses that address with port 3000. This mattered straight away: on the phone's hotspot the laptop's address changed from `10.7.19.118` to `10.37.63.146`, and the app needed no change. For a deployed server, `EXPO_PUBLIC_API_URL` overrides it.
+
+**One `fetch` wrapper (`api.ts`).** Every request goes through `request()`, which adds `Authorization: Bearer`, sets `Content-Type: application/json` only when there's a body (the Fastify empty-body gotcha), aborts after 10 seconds with `AbortController` (a phone on a weak network shouldn't spin forever), and turns any failure into an `ApiError` with a message a screen can show. `status: 0` means "couldn't reach the server at all", so the screen can say "check your connection" instead of a server error.
+
+**The token lives in `expo-secure-store`.** On Android it's encrypted with a key from the Android Keystore. `AsyncStorage` would keep it as plain text in the app's storage. On launch, `App.tsx` reads it back, so you stay logged in after closing the app (we tested this). If any request gets a `401` (token expired or invalid), the app clears it and shows the login screen.
+
+**Validation in two places, for different reasons.** The app checks "10 digits" and "6 digits" instantly, for a better experience. The server validates everything again, because anyone can call the API without the app. Server messages (e.g. "Enter a valid 10-digit Indian mobile number") are shown as they are.
+
+**Small touches that match how people use OTP screens:** the number pad keyboard; `+91` shown as a fixed prefix; `autoComplete="sms-otp"` so Android can offer to fill the code from an SMS once a real provider sends one; a "Resend in 30s" countdown that uses the server's `retryAfterSeconds`; "Incorrect OTP. 3 attempts left."; and buttons that show a spinner and ignore taps while a request runs, so a double-tap can't send twice.
+
+**An honest label:** the login screen says "Demo: SMS is mocked. The OTP is printed in the server's terminal." The assignment asks for a mock OTP, and the README must not pretend otherwise.
+
+**Safe areas.** Android now draws apps edge to edge (behind the status bar). `react-native-safe-area-context` adds the right padding so nothing hides under the clock or camera cut-out.
+
+**Getting the phone to reach the laptop (troubleshooting we actually did):**
+- College Wi-Fi ("Students 26") blocks devices from talking to each other, so the phone couldn't reach the laptop. The fix was the phone's own hotspot.
+- On Windows, a "Public" network blocks incoming connections unless the program is allowed. Node.js was already allowed on Public networks, which we checked read-only with `Get-NetFirewallRule`.
+- The quick test: open `http://<laptop-ip>:3000/health` in the phone's browser. If that fails, the app can't work either.
+- Plain `http://` works in Expo Go. A standalone APK would need cleartext traffic allowed, or HTTPS on a deployed server.
+
+**CI now checks the app too:** a second job runs `npm ci`, the TypeScript check and `expo export --platform android` (it builds the JavaScript bundle the phone downloads, which catches broken imports).
+
 ---
 
 ## 4. Commands
@@ -427,3 +482,29 @@ On every push and pull request, GitHub Actions spins up Ubuntu with a throwaway 
 
 **Q: What is `app.inject()`?**
 Fastify's way of sending a request straight into the app in memory, without a network port. It's why the tests are fast, and why `buildApp()` is separate from `server.ts`, which is the only place that calls `listen()`.
+
+### Milestone 5: the app and the login screen
+
+**Q: Walk me through tapping "Verify" to seeing the home screen.**
+`LoginScreen` checks the code is 6 digits, sets `loading` (the button shows a spinner and ignores taps), and calls `api.verifyOtp`. `api.ts` sends `POST /auth/verify-otp` with a JSON body to the laptop's address. The server checks the code and returns `{ token, user }`. `App.tsx` saves the token in SecureStore and puts it in state; React re-renders, sees a token, and shows `HomeScreen`, which calls `GET /auth/me` with `Authorization: Bearer <token>`.
+
+**Q: How does the phone reach your laptop's server during development?**
+Both are on the same network (my phone's hotspot; college Wi-Fi blocks device-to-device traffic). The server listens on `0.0.0.0`, so it accepts connections from the network, and Windows Firewall allows Node.js. The app doesn't hard-code the IP: Expo Go knows which laptop it loaded the app from (`hostUri`), so the app calls that address on port 3000.
+
+**Q: Where do you store the JWT on the phone, and why there?**
+In `expo-secure-store`, which on Android encrypts it with a key held in the Android Keystore. `AsyncStorage` would be plain text. It's read on launch so the user stays logged in; on a `401` it's deleted and the login screen comes back.
+
+**Q: How is React Native different from React on the web?**
+Same React (components, props, hooks). Different building blocks: `<View>`, `<Text>`, `<TextInput>`, `<Pressable>` instead of HTML elements, and styles are JS objects with Flexbox. It renders real native Android views, not a web page.
+
+**Q: Why no navigation library?**
+Two screens chosen by one condition (is there a token?) don't need one, and every dependency should earn its place. With a back stack, tabs or deep links I'd add expo-router or React Navigation.
+
+**Q: The server validates input, so why does the app check it too?**
+Different jobs: the app's check is for instant feedback without a network round trip; the server's is for security, because anyone can call the API directly. The server's messages are the source of truth, and the app displays them.
+
+**Q: What happens on a bad network?**
+Requests give up after 10 seconds (`AbortController`). A request that never reached the server becomes "Can't reach the server. Check your connection and try again." instead of an endless spinner. The buttons ignore taps while a request runs, so retries are deliberate.
+
+**Q: Why Expo SDK 57 when 58 exists?**
+The Play Store's Expo Go only supports SDK 57. I hit "requires a newer version of Expo Go", checked Expo's version API, and moved to 57. That also means any reviewer can open the project in the store's Expo Go.

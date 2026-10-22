@@ -1,4 +1,5 @@
-# Runs on every push to main and every pull request: lint, typecheck, build and test the API.
+# Runs on every push to main and every pull request: lint, typecheck, build and test the API,
+# and typecheck and bundle the mobile app.
 name: CI
 
 on:
@@ -46,3 +47,24 @@ jobs:
       - run: npm run build
       # The tests apply the migrations to the test database themselves (tests/global-setup.ts).
       - run: npm test
+
+  app:
+    name: App (typecheck, Android bundle)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      # Builds the JavaScript bundle the phone downloads, which catches import and syntax errors.
+      - run: npx expo export --platform android --output-dir /tmp/expo-export

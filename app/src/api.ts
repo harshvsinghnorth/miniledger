@@ -91,4 +91,8 @@ export const api = {
   summary: (token: string) => request<Summary>("/loans/summary", { token }),
 
   repay: (token: string, id: number) => request<Loan>(`/loans/${id}/repay`, { method: "PATCH", token }),
+
+  // amount is sent as text ("250.50"), so it never passes through a float on its way to paise.
+  createLoan: (token: string, loan: { friendName: string; amount: string; dueDate: string }) =>
+    request<Loan>("/loans", { method: "POST", body: loan, token }),
 };

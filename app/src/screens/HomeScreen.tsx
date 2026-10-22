@@ -1,13 +1,26 @@
 import { useNetInfo } from "@react-native-community/netinfo";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  ToastAndroid,
+  View,
+} from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { ApiError, api, type Loan, type Summary } from "../api";
 import { LinkButton, PrimaryButton } from "../components/Button";
 import { LoanRow } from "../components/LoanRow";
 import { SummaryCard } from "../components/SummaryCard";
 import { dateInIndia, formatRupees } from "../format";
 import { colors, spacing } from "../theme";
+import { AddLoanScreen } from "./AddLoanScreen";
 
 type Props = {
   token: string;
@@ -30,6 +43,7 @@ export function HomeScreen({ token, onLogout }: Props) {
   const [error, setError] = useState<string | null>(null); // the last load's error, if it failed
   const [refreshing, setRefreshing] = useState(false);
   const [repayingId, setRepayingId] = useState<number | null>(null);
+  const [adding, setAdding] = useState(false); // the add-loan form is open
   const { isConnected } = useNetInfo(); // true, false, or null while still checking
 
   // Fetch the list and the summary at the same time.
@@ -89,6 +103,19 @@ export function HomeScreen({ token, onLogout }: Props) {
     } finally {
       setRepayingId(null);
     }
+  }
+
+  function onLoanSaved(loan: Loan) {
+    setAdding(false);
+    load(); // the new loan appears in its place in the list, and the totals update
+    if (Platform.OS === "android") {
+      ToastAndroid.show(`Added ${formatRupees(loan.amount)} lent to ${loan.friendName}`, ToastAndroid.SHORT);
+    }
+  }
+
+  function onSessionExpired() {
+    setAdding(false);
+    onLogout();
   }
 
   const header = (
@@ -165,12 +192,34 @@ export function HomeScreen({ token, onLogout }: Props) {
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyTitle}>No loans yet</Text>
-            <Text style={styles.emptyText}>Money you lend to friends will show up here.</Text>
+            <Text style={styles.emptyText}>Tap "Add loan" to record money you've lent to a friend.</Text>
           </View>
         }
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} colors={[colors.primary]} />}
         contentContainerStyle={styles.list}
       />
+
+      {/* A floating button, always reachable however far the list is scrolled. */}
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => setAdding(true)}
+        style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
+      >
+        <Text style={styles.addButtonText}>+ Add loan</Text>
+      </Pressable>
+
+      {/* The form slides up over the list; Android's back button closes it (onRequestClose).
+          A Modal is a separate native window, so it gets its own SafeAreaProvider. */}
+      <Modal visible={adding} animationType="slide" onRequestClose={() => setAdding(false)}>
+        <SafeAreaProvider>
+          <AddLoanScreen
+            token={token}
+            onCancel={() => setAdding(false)}
+            onSaved={onLoanSaved}
+            onSessionExpired={onSessionExpired}
+          />
+        </SafeAreaProvider>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -189,7 +238,19 @@ const styles = StyleSheet.create({
   errorTitle: { fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },
   errorText: { fontSize: 15, color: colors.muted, textAlign: "center" },
   retry: { alignSelf: "stretch", marginTop: spacing.lg },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
+  list: { paddingHorizontal: spacing.lg, paddingBottom: 96 }, // room for the floating button
+  addButton: {
+    position: "absolute",
+    right: spacing.lg,
+    bottom: spacing.xl,
+    backgroundColor: colors.primary,
+    borderRadius: 28,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 14,
+    elevation: 4,
+  },
+  addButtonText: { color: colors.primaryText, fontSize: 16, fontWeight: "700" },
+  pressed: { opacity: 0.85 },
   banner: { backgroundColor: "#FEF3C7", borderRadius: 10, padding: spacing.sm, marginBottom: spacing.md },
   bannerText: { color: "#92400E", fontSize: 14 },
   sectionTitle: { fontSize: 16, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },

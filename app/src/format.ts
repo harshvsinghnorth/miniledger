@@ -39,6 +39,26 @@ export function formatDate(isoDate: string): string {
   return `${Number(day)} ${MONTHS[Number(month) - 1]} ${year}`;
 }
 
+// "2026-10-22" + 7 -> "2026-10-29"
+export function addDays(isoDate: string, days: number): string {
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+// The date picker works with Date objects in the phone's own calendar.
+// These convert between that and our "YYYY-MM-DD" text.
+export function toIsoDate(local: Date): string {
+  const month = String(local.getMonth() + 1).padStart(2, "0");
+  const day = String(local.getDate()).padStart(2, "0");
+  return `${local.getFullYear()}-${month}-${day}`;
+}
+
+export function fromIsoDate(isoDate: string): Date {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
 // Whole days from one "YYYY-MM-DD" to another (negative if `to` is earlier).
 function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);

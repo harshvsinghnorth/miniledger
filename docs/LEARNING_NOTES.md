@@ -80,6 +80,9 @@ HomeScreen ── Promise.all([GET /loans, GET /loans/summary]) ──► Summar
            ── "Mark repaid" → confirm → PATCH /loans/:id/repay → load() again
            ── load fails? keep the last data + yellow banner;  401? → LoginScreen
            ── NetInfo: offline → banner;  back online → load() automatically
+           ── "+ Add loan" → Modal with AddLoanScreen
+AddLoanScreen ── validate() in the app (instant) ── POST /loans { friendName, amount: "1500", dueDate }
+              ── 400? server's field messages under each field;  201? close, toast, HomeScreen.load()
 ```
 
 ### How the tests run
@@ -148,6 +151,7 @@ git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 1
 | `app/src/format.ts` | `formatRupees` (Indian grouping: ₹1,25,000), `formatDate` ("31 Oct 2026"), `dateInIndia`, and `dueLabel` ("Overdue by 3 days", "Due tomorrow", "Repaid on …"). |
 | `app/src/components/SummaryCard.tsx` | The three totals: Total lent, Repaid (green), Overdue (red, with the number of loans). |
 | `app/src/components/LoanRow.tsx` | One loan: name, amount, due label, OVERDUE badge and red styling, "Mark repaid" with its own spinner. |
+| `app/src/screens/AddLoanScreen.tsx` | The add-loan form: name, amount (₹, decimal pad), due date (picker + 1 week / 2 weeks / 1 month), instant checks, server field errors, past-date warning. |
 | `server/src/otp.ts` | Pure OTP helpers: generate a secure random code, HMAC-hash it, compare in constant time. Also the limits (5 min, 5 attempts, 30 s cooldown). |
 | `server/src/sms.ts` | The mock SMS sender: prints the code to the log. The single function a real SMS provider would replace. |
 | `server/src/auth.ts` | `signToken()` creates a JWT; `requireAuth` is the preHandler hook that protects routes and sets `request.userId`. |
@@ -366,6 +370,24 @@ The bug from the hospital project was trusting an id the client sent. Here, `use
 
 **Not done (talking points):** the offline copy lives in memory, so if the app is closed while offline, it opens to an error. With more time I'd save the last data on the device (SQLite or AsyncStorage) and queue actions taken offline, like "mark repaid", to send when the connection returns, which is what a shop owner on a weak connection really needs.
 
+### Milestone 7: the add-loan form
+
+**A `Modal`, not a new navigation stack.** The form slides up over the list. `onRequestClose` makes Android's back button close it, and after saving, the home screen reloads. A Modal is a separate native window, so it gets its own `SafeAreaProvider` to know where the status bar is.
+
+**Two layers of validation, shown in the same place.** `validate()` in the app catches the obvious (empty name, an amount that isn't like `1500` or `250.50`) instantly, without a network call. Anything the server rejects (e.g. ₹2 crore → "Amount can't be more than ₹1,00,00,000") comes back as `fields`, and the form puts each message under its own field. We tested both on the phone.
+
+**The amount is sent as text** (`"1500"`, `"250.50"`). The server accepts a number or a string, and text means the value never becomes a float on the way: the server turns `"250.50"` into `25050` paise exactly.
+
+**Due date: a picker, plus quick choices.** Udhaar is usually given "for a week" or "for a month", so 1 week / 2 weeks / 1 month are one tap away, with the default set to a week from today. "Change" opens Android's calendar (`@react-native-community/datetimepicker`); the component is rendered only while it's needed, and the result is kept only when the user taps OK (`event.type === "set"`).
+
+**Dates as text, converted only at the picker.** The app keeps the due date as `"YYYY-MM-DD"`, the same as the API. The picker works with JavaScript `Date` objects in the phone's calendar, so `fromIsoDate`/`toIsoDate` convert at that boundary using the local year, month and day. This avoids the classic bug where midnight in India becomes the previous day in UTC.
+
+**Past dates are allowed on purpose**: you may be recording a loan you gave last month. The form says, in red, that it will show as overdue, so it's never a surprise. (The demo video needs an overdue entry too.)
+
+**Nothing typed is lost on failure.** If saving fails (offline, server down, validation), the form stays open with everything filled in and shows why. The Save button can't be double-tapped while saving.
+
+**Small touches:** the name field gets focus and capitalises words; the amount uses the decimal number pad with a ₹ prefix; a toast ("Added ₹1,500 lent to Rahul") confirms the save, since the form disappears; the empty list now says how to add the first loan.
+
 ---
 
 ## 4. Commands
@@ -559,3 +581,20 @@ It virtualizes: it only renders rows near the screen and recycles them, so long 
 
 **Q: How do you show ₹1,25,000 instead of ₹125,000?**
 A small function: take the last 3 digits, then group the rest in pairs. I wrote it by hand rather than relying on the phone's locale support, so it formats the same on every device, and I work in whole paise so floating-point noise never shows.
+
+### Milestone 7: the add-loan form
+
+**Q: How does validation work in the add-loan form?**
+Two layers. The app checks the obvious instantly (name present, amount looks like `1500` or `250.50`). Then the server validates everything with zod; if it rejects something, it returns a message per field, and the form shows each under its field. The server is the real gatekeeper because anyone can call the API without the app.
+
+**Q: Why send the amount as a string?**
+So it never becomes a floating-point number on the way. The server parses `"250.50"` as text into `25050` paise. If the app sent `250.5` as a JSON number it would still work for that value, but text keeps the whole path exact by design.
+
+**Q: How do you handle the due date and time zones?**
+The date is a plain `"YYYY-MM-DD"` everywhere: app state, API and a Postgres `DATE` column. Only the date picker needs a `Date` object, and I convert at that boundary using the phone's local year, month and day, so picking 22 October can never turn into 21 October through a UTC conversion.
+
+**Q: Why allow a due date in the past?**
+Because people record loans after the fact. The form warns in red that the loan will show as overdue, so the user isn't surprised.
+
+**Q: What happens if saving fails?**
+The form stays open with everything still filled in, shows why (a field error, "Can't reach the server", etc.), and the button is ready to retry. While a save is running, the button shows a spinner and ignores taps, so a loan can't be added twice by a double-tap.

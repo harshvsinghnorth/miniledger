@@ -75,6 +75,11 @@ App starts ──► session.ts: token saved in SecureStore?
 LoginScreen ── api.requestOtp("9876543210") ──► http://<laptop>:3000/auth/request-otp
             ── api.verifyOtp(phone, code)   ──► { token } ──► saveToken ──► HomeScreen
 <laptop> = the address Expo Go loaded the app from (Constants.expoConfig.hostUri), not typed by hand
+
+HomeScreen ── Promise.all([GET /loans, GET /loans/summary]) ──► SummaryCard + FlatList of LoanRow
+           ── "Mark repaid" → confirm → PATCH /loans/:id/repay → load() again
+           ── load fails? keep the last data + yellow banner;  401? → LoginScreen
+           ── NetInfo: offline → banner;  back online → load() automatically
 ```
 
 ### How the tests run
@@ -139,7 +144,10 @@ git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 1
 | `app/src/components/Button.tsx` | `PrimaryButton` (spinner, ignores taps while loading) and `LinkButton`. |
 | `app/src/components/TextField.tsx` | A labelled input with an optional prefix (`+91`) and its error message underneath. |
 | `app/src/screens/LoginScreen.tsx` | Phone step → OTP step, resend countdown, attempts-left messages. |
-| `app/src/screens/HomeScreen.tsx` | For now: shows who's logged in (proves the saved token works) and a log-out button. |
+| `app/src/screens/HomeScreen.tsx` | The main screen: loads loans + summary, summary card, loan list, mark repaid, pull-to-refresh, and the loading / error / empty / offline states. |
+| `app/src/format.ts` | `formatRupees` (Indian grouping: ₹1,25,000), `formatDate` ("31 Oct 2026"), `dateInIndia`, and `dueLabel` ("Overdue by 3 days", "Due tomorrow", "Repaid on …"). |
+| `app/src/components/SummaryCard.tsx` | The three totals: Total lent, Repaid (green), Overdue (red, with the number of loans). |
+| `app/src/components/LoanRow.tsx` | One loan: name, amount, due label, OVERDUE badge and red styling, "Mark repaid" with its own spinner. |
 | `server/src/otp.ts` | Pure OTP helpers: generate a secure random code, HMAC-hash it, compare in constant time. Also the limits (5 min, 5 attempts, 30 s cooldown). |
 | `server/src/sms.ts` | The mock SMS sender: prints the code to the log. The single function a real SMS provider would replace. |
 | `server/src/auth.ts` | `signToken()` creates a JWT; `requireAuth` is the preHandler hook that protects routes and sets `request.userId`. |
@@ -335,6 +343,29 @@ The bug from the hospital project was trusting an id the client sent. Here, `use
 
 **CI now checks the app too:** a second job runs `npm ci`, the TypeScript check and `expo export --platform android` (it builds the JavaScript bundle the phone downloads, which catches broken imports).
 
+### Milestone 6: the home screen
+
+**The list and the summary load in parallel.** `Promise.all([api.listLoans, api.summary])` sends both requests at once, so the screen waits for the slower one, not the two added together.
+
+**The phone never decides money or overdue.** Totals come from `/loans/summary` (SQL), and the red highlight uses the server's `isOverdue`. The phone only *formats*. So the list and the card can't disagree, and the rule lives in one place (the server, which has tests). The phone does compute labels like "Overdue by 3 days", using India's date, the same rule as the server.
+
+**Every state has a screen**, which is the first duty in CredSetu's listing:
+- *first load:* a spinner;
+- *first load failed:* what went wrong, plus a **Try again** button;
+- *no loans:* an empty state with a sentence, not a blank screen;
+- *a refresh failed:* the old data **stays** with a yellow banner ("Couldn't refresh: … Pull down to try again."). Wiping a screen full of useful data because one refresh failed is worse than showing it slightly old;
+- *offline:* NetInfo reports `isConnected === false`, and the banner says "You're offline. Showing data from 14:05." When the connection comes back, the screen refreshes on its own. We tested all of these on the phone by stopping the server and using airplane mode.
+
+**Mark repaid:** a confirmation dialog first (there's no undo), a spinner on that row only, then the whole list and summary reload from the server. *Trade-off:* reloading costs one extra request, but updating the row on the phone would mean copying the server's overdue and totals rules into the app. If the request fails, the user can simply try again, because the server ignores a second repay of the same loan (idempotent).
+
+**`FlatList`, not `ScrollView` + `map`.** `FlatList` only creates the rows near the screen and reuses them while scrolling, so 1,000 loans scroll as smoothly as 10. It also gives pull-to-refresh (`RefreshControl`), a header (the summary card scrolls with the list) and an empty state.
+
+**Indian number formatting is done by hand** in `formatRupees`: last 3 digits, then groups of 2 (`1,23,45,678`). `Intl.NumberFormat("en-IN")` would also work, but the phone's JavaScript engine (Hermes) handles locales differently from Node, and a 15-line function behaves the same everywhere and is easy to check. It works in whole paise, so even `0.1 + 0.2` displays as `₹0.30`.
+
+**Overdue rows stand out three ways:** a red left edge, a red tint and an OVERDUE badge, plus red text, so they're obvious when scrolling and don't rely on colour alone. Repaid loans go grey with a green edge and drop to the bottom (the server's sort order).
+
+**Not done (talking points):** the offline copy lives in memory, so if the app is closed while offline, it opens to an error. With more time I'd save the last data on the device (SQLite or AsyncStorage) and queue actions taken offline, like "mark repaid", to send when the connection returns, which is what a shop owner on a weak connection really needs.
+
 ---
 
 ## 4. Commands
@@ -508,3 +539,23 @@ Requests give up after 10 seconds (`AbortController`). A request that never reac
 
 **Q: Why Expo SDK 57 when 58 exists?**
 The Play Store's Expo Go only supports SDK 57. I hit "requires a newer version of Expo Go", checked Expo's version API, and moved to 57. That also means any reviewer can open the project in the store's Expo Go.
+
+### Milestone 6: the home screen
+
+**Q: How do you handle loading, error, empty and offline states?**
+Each has its own UI: a spinner on first load; an error with "Try again" if the first load fails; an empty state if there are no loans. If a later refresh fails, the last good data stays on screen with a banner explaining why. NetInfo tells me when the phone is offline (banner with the time of the data shown) and when it's back (automatic refresh). A 401 logs the user out.
+
+**Q: How are overdue loans highlighted, and who decides what's overdue?**
+The server decides: each loan has `isOverdue`, computed with India's date. The row then gets a red edge, a red tint, an OVERDUE badge and red "Overdue by N days" text. Because the summary also comes from the server, the list and the totals always agree.
+
+**Q: Why not calculate the totals on the phone from the list?**
+One source of truth. The rules (what counts as overdue, which "today") live on the server, where they're tested, and the SQL does the sums exactly in paise. Calculating on the phone would duplicate the rules and risk the card disagreeing with the server, and once the list is paginated the phone wouldn't even have all the loans.
+
+**Q: What happens if "Mark repaid" is tapped on a bad network?**
+The button shows a spinner and can't be tapped again. If the request times out or fails, the user sees an error and can retry, which is safe because the endpoint is idempotent: a second repay changes nothing. After success, the list and totals reload from the server.
+
+**Q: Why FlatList?**
+It virtualizes: it only renders rows near the screen and recycles them, so long lists stay fast and use little memory. It also has pull-to-refresh, header and empty-state support built in.
+
+**Q: How do you show ₹1,25,000 instead of ₹125,000?**
+A small function: take the last 3 digits, then group the rest in pairs. I wrote it by hand rather than relying on the phone's locale support, so it formats the same on every device, and I work in whole paise so floating-point noise never shows.

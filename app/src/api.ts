@@ -59,6 +59,24 @@ export async function request<T>(path: string, { method = "GET", body, token }: 
 
 export type User = { id: number; phone: string };
 
+// The shapes the server sends back (see server/src/routes/loans.ts).
+export type Loan = {
+  id: number;
+  friendName: string;
+  amount: number; // rupees
+  dueDate: string; // "YYYY-MM-DD"
+  repaidAt: string | null; // ISO timestamp, null = not repaid
+  isOverdue: boolean; // decided by the server, using today's date in India
+  createdAt: string;
+};
+
+export type Summary = {
+  totalLent: number;
+  totalRepaid: number;
+  overdueAmount: number;
+  overdueCount: number;
+};
+
 export const api = {
   requestOtp: (phone: string) =>
     request<{ message: string; expiresInSeconds: number }>("/auth/request-otp", { method: "POST", body: { phone } }),
@@ -67,4 +85,10 @@ export const api = {
     request<{ token: string; user: User }>("/auth/verify-otp", { method: "POST", body: { phone, otp } }),
 
   me: (token: string) => request<User>("/auth/me", { token }),
+
+  listLoans: (token: string) => request<{ loans: Loan[] }>("/loans", { token }),
+
+  summary: (token: string) => request<Summary>("/loans/summary", { token }),
+
+  repay: (token: string, id: number) => request<Loan>(`/loans/${id}/repay`, { method: "PATCH", token }),
 };

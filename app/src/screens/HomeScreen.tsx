@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { useNetInfo } from "@react-native-community/netinfo";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ApiError, api, type User } from "../api";
-import { LinkButton } from "../components/Button";
+import { ApiError, api, type Loan, type Summary } from "../api";
+import { LinkButton, PrimaryButton } from "../components/Button";
+import { LoanRow } from "../components/LoanRow";
+import { SummaryCard } from "../components/SummaryCard";
+import { dateInIndia, formatRupees } from "../format";
 import { colors, spacing } from "../theme";
 
 type Props = {
@@ -10,37 +14,163 @@ type Props = {
   onLogout: () => void;
 };
 
-// Placeholder for milestone 5: proves the saved token works. Milestone 6 adds the
-// summary card and the loan list.
+type Data = { loans: Loan[]; summary: Summary; loadedAt: Date };
+
+function errorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : "Something went wrong.";
+}
+
+// "14:05" in the phone's local time
+function formatTime(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 export function HomeScreen({ token, onLogout }: Props) {
-  const [user, setUser] = useState<User | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<Data | null>(null); // the last data that loaded successfully
+  const [error, setError] = useState<string | null>(null); // the last load's error, if it failed
+  const [refreshing, setRefreshing] = useState(false);
+  const [repayingId, setRepayingId] = useState<number | null>(null);
+  const { isConnected } = useNetInfo(); // true, false, or null while still checking
+
+  // Fetch the list and the summary at the same time.
+  const load = useCallback(async () => {
+    try {
+      const [{ loans }, summary] = await Promise.all([api.listLoans(token), api.summary(token)]);
+      setData({ loans, summary, loadedAt: new Date() });
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        onLogout(); // the token expired or is invalid: back to the login screen
+        return;
+      }
+      setError(errorMessage(err)); // `data` keeps the last good copy, so the screen isn't wiped
+    }
+  }, [token, onLogout]);
 
   useEffect(() => {
-    api
-      .me(token)
-      .then(setUser)
-      .catch((err) => {
-        // 401 = the token expired or is invalid: back to the login screen.
-        if (err instanceof ApiError && err.status === 401) {
-          onLogout();
-        } else {
-          setError(err instanceof ApiError ? err.message : "Something went wrong.");
-        }
-      });
-  }, [token, onLogout]);
+    load();
+  }, [load]);
+
+  // When the phone comes back online, refresh without waiting for the user.
+  const wasConnected = useRef(isConnected);
+  useEffect(() => {
+    if (wasConnected.current === false && isConnected === true) {
+      load();
+    }
+    wasConnected.current = isConnected;
+  }, [isConnected, load]);
+
+  async function refresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
+
+  // Ask first: there's no "undo" for marking a loan repaid.
+  function confirmMarkRepaid(loan: Loan) {
+    Alert.alert("Mark as repaid?", `${loan.friendName} paid back ${formatRupees(loan.amount)}.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Mark repaid", onPress: () => markRepaid(loan) },
+    ]);
+  }
+
+  async function markRepaid(loan: Loan) {
+    setRepayingId(loan.id);
+    try {
+      await api.repay(token, loan.id);
+      await load(); // fresh list and totals from the server
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        onLogout();
+        return;
+      }
+      // Trying again is safe: the server ignores a second "repay" of the same loan.
+      Alert.alert("Couldn't mark as repaid", errorMessage(err));
+    } finally {
+      setRepayingId(null);
+    }
+  }
+
+  const header = (
+    <View style={styles.header}>
+      <Text style={styles.title}>MiniLedger</Text>
+      <LinkButton title="Log out" onPress={onLogout} />
+    </View>
+  );
+
+  // First load still running: nothing to show yet.
+  if (!data && !error) {
+    return (
+      <SafeAreaView style={styles.screen}>
+        {header}
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // First load failed: explain why and offer a retry.
+  if (!data) {
+    return (
+      <SafeAreaView style={styles.screen}>
+        {header}
+        <View style={styles.center}>
+          <Text style={styles.errorTitle}>Couldn't load your loans</Text>
+          <Text style={styles.errorText}>{error}</Text>
+          <View style={styles.retry}>
+            <PrimaryButton title="Try again" onPress={refresh} loading={refreshing} />
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Data loaded. If we're offline or the last refresh failed, keep the old data
+  // on screen and say so, rather than hiding everything behind an error.
+  let banner: string | null = null;
+  if (isConnected === false) {
+    banner = `You're offline. Showing data from ${formatTime(data.loadedAt)}.`;
+  } else if (error) {
+    banner = `Couldn't refresh: ${error} Pull down to try again.`;
+  }
+
+  const today = dateInIndia(new Date());
 
   return (
     <SafeAreaView style={styles.screen}>
-      <View style={styles.header}>
-        <Text style={styles.title}>MiniLedger</Text>
-        <LinkButton title="Log out" onPress={onLogout} />
-      </View>
-      <View style={styles.body}>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        {!user && !error ? <ActivityIndicator color={colors.primary} /> : null}
-        {user ? <Text style={styles.text}>Logged in as {user.phone}</Text> : null}
-      </View>
+      {header}
+      <FlatList
+        data={data.loans}
+        keyExtractor={(loan) => String(loan.id)}
+        renderItem={({ item }) => (
+          <LoanRow
+            loan={item}
+            today={today}
+            repaying={repayingId === item.id}
+            onMarkRepaid={confirmMarkRepaid}
+          />
+        )}
+        ListHeaderComponent={
+          <>
+            {banner ? (
+              <View style={styles.banner}>
+                <Text style={styles.bannerText}>{banner}</Text>
+              </View>
+            ) : null}
+            <SummaryCard summary={data.summary} />
+            <Text style={styles.sectionTitle}>Your loans</Text>
+          </>
+        }
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Text style={styles.emptyTitle}>No loans yet</Text>
+            <Text style={styles.emptyText}>Money you lend to friends will show up here.</Text>
+          </View>
+        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} colors={[colors.primary]} />}
+        contentContainerStyle={styles.list}
+      />
     </SafeAreaView>
   );
 }
@@ -55,7 +185,15 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   title: { fontSize: 24, fontWeight: "800", color: colors.primary },
-  body: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg },
-  text: { fontSize: 17, color: colors.text },
-  error: { fontSize: 15, color: colors.danger, textAlign: "center" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  errorTitle: { fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },
+  errorText: { fontSize: 15, color: colors.muted, textAlign: "center" },
+  retry: { alignSelf: "stretch", marginTop: spacing.lg },
+  list: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xl },
+  banner: { backgroundColor: "#FEF3C7", borderRadius: 10, padding: spacing.sm, marginBottom: spacing.md },
+  bannerText: { color: "#92400E", fontSize: 14 },
+  sectionTitle: { fontSize: 16, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },
+  empty: { alignItems: "center", paddingVertical: spacing.xl },
+  emptyTitle: { fontSize: 17, fontWeight: "700", color: colors.text },
+  emptyText: { fontSize: 14, color: colors.muted, marginTop: spacing.xs, textAlign: "center" },
 });

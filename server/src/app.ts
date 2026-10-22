@@ -3,6 +3,7 @@ import { ZodError, z } from "zod";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { authRoutes } from "./routes/auth.js";
+import { loanRoutes } from "./routes/loans.js";
 
 // Builds the app without starting it. server.ts calls listen() on it;
 // tests will call app.inject() instead, which sends fake requests without a real port.
@@ -48,6 +49,7 @@ export function buildApp() {
   });
 
   app.register(authRoutes);
+  app.register(loanRoutes);
 
   // Close database connections when the server shuts down.
   app.addHook("onClose", async () => {

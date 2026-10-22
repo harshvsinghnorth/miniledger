@@ -65,6 +65,26 @@ Phone ── PATCH /loans/7/repay ──► UPDATE … WHERE id = 7 AND user_id 
 Phone ── GET /loans/summary  ──► one SQL query: SUM(...) FILTER (WHERE ...) ──► 4 numbers
 ```
 
+### How the tests run
+
+```
+npm test
+ ├─ vitest.config.ts       loads .env.test  →  DATABASE_URL = …/miniledger_test
+ ├─ tests/global-setup.ts  once: refuse unless the DB name ends in _test, then prisma migrate deploy
+ ├─ tests/setup.ts         every file: replace sendOtpSms with a fake that records the code
+ └─ each test file, one at a time
+      beforeEach: TRUNCATE all tables (+ log in Alice and Bob for loan tests)
+      app.inject({ method, url, payload, headers })  →  routes → zod → Prisma → miniledger_test
+      expect(...) on status codes, JSON bodies, and rows read straight from the database
+```
+
+### What CI does on every push
+
+```
+git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 17 on port 5433
+             npm ci ──► lint ──► typecheck ──► build ──► test ──► ✓ or ✗ next to the commit
+```
+
 ---
 
 ## 2. Files and what they do
@@ -88,6 +108,15 @@ Phone ── GET /loans/summary  ──► one SQL query: SUM(...) FILTER (WHERE
 | `server/src/money.ts` | `rupeesToPaise` (exact, works on the text) and `paiseToRupees` (for responses). |
 | `server/src/dates.ts` | `todayInIndia()` (the date in Asia/Kolkata, whatever the server's timezone) and `toDateString()`. |
 | `server/src/routes/loans.ts` | The loan routes: `GET /loans`, `POST /loans`, `PATCH /loans/:id/repay`, `GET /loans/summary`, plus `isOverdue()` and the response shape. |
+| `server/tsconfig.json` / `tsconfig.build.json` | The first is for checking types (app + tests + configs, emits nothing); the second compiles only `src/` into `dist/`. |
+| `server/eslint.config.js` | Lint rules: ESLint's and typescript-eslint's recommended sets; ignores build output and generated code. |
+| `server/.env.test` | Test settings: the `miniledger_test` database and dummy secrets. Committed on purpose (nothing real in it); CI uses it too. |
+| `server/vitest.config.ts` | Loads `.env.test`, registers the setup files, runs test files one after another (they share a database). |
+| `server/tests/global-setup.ts` | Runs once: the "_test" safety guard, then applies migrations to the test database. |
+| `server/tests/setup.ts` | Runs in every test file: swaps the SMS sender for a recording fake. |
+| `server/tests/helpers.ts` | `resetDatabase`, `login`, `lastOtpSent`, `authHeader`, `daysFromToday`. |
+| `server/tests/*.test.ts` | Unit tests (`money`, `dates`, `validation`, `otp`) and integration tests (`auth`, `loans`): 81 in total. |
+| `.github/workflows/ci.yml` | The GitHub Actions workflow: lint, typecheck, build and test on every push and pull request. |
 | `server/src/otp.ts` | Pure OTP helpers: generate a secure random code, HMAC-hash it, compare in constant time. Also the limits (5 min, 5 attempts, 30 s cooldown). |
 | `server/src/sms.ts` | The mock SMS sender: prints the code to the log. The single function a real SMS provider would replace. |
 | `server/src/auth.ts` | `signToken()` creates a JWT; `requireAuth` is the preHandler hook that protects routes and sets `request.userId`. |
@@ -213,6 +242,44 @@ The bug from the hospital project was trusting an id the client sent. Here, `use
 
 **Out of scope, on purpose:** pagination, editing or deleting a loan, and partial repayments. They're in the "what I'd add next" answers below.
 
+### Milestone 4: tests and CI
+
+**Two kinds of tests.**
+*Unit tests* call one pure function directly: `rupeesToPaise("1.15")` must be `115`. They're instant and pinpoint the broken function. *Integration tests* send real HTTP requests through the whole app into a real database: they prove the pieces work *together* (route + validation + auth + SQL). 4 unit files, 2 integration files, 81 tests.
+
+**`app.inject()` instead of Supertest.** Fastify can push a fake HTTP request straight into the app without opening a port. That's faster, needs no extra package, and is the reason `buildApp()` is separate from `server.ts`.
+
+**A real test database, not a mocked Prisma.** The most important logic lives in SQL: the summary query, the conditional UPDATEs, the CHECK constraint. Mocking the database would only test the mock. So tests run against `miniledger_test`, a separate database in the same Postgres container.
+*Trade-off:* tests need Postgres running and are a bit slower (~6 s for all 81). Worth it.
+
+**Tests can't wipe real data.** Every test starts by emptying the tables. Two protections stop that from hitting the dev database: tests read `.env.test`, which points at `miniledger_test`, and `global-setup.ts` refuses to start if the database name doesn't end in `_test`. We tested the guard by pointing tests at the dev database: they refused, and the dev loans were still there.
+
+**Each test starts from empty tables** (`TRUNCATE … RESTART IDENTITY` in `beforeEach`), so a test never depends on what another test left behind, and they pass in any order.
+
+**Test files run one at a time** (`fileParallelism: false`). They share one database; in parallel, one file's `TRUNCATE` would delete another file's rows mid-test.
+
+**Reading the OTP in tests: a fake SMS sender.** The real `sendOtpSms` only prints the code. `tests/setup.ts` uses `vi.mock` to replace it with `vi.fn()`, a fake that records every call; `lastOtpSent()` reads the code from the last call. This is the same idea as a Mockito `@MockBean` in Spring. Only the SMS edge is faked: everything else is real.
+
+**Dates relative to today.** Overdue tests use `daysFromToday(-1)`, `daysFromToday(0)` and so on, so they pass on any day. The tricky midnight-in-India boundary is tested directly on `todayInIndia()` with fixed instants (18:29:59 vs 18:30:00 UTC), which is why that function takes `now` as a parameter.
+
+**A race-condition test.** Ten wrong OTP guesses are fired at once with `Promise.all`. Exactly 5 must get 401 and 5 must get 429, and the database must say `attempts = 5`. That proves the conditional UPDATE holds under concurrency, not just in theory.
+
+**Tests that check money the way users see it:** ₹0.10 + ₹0.20 lent must show `totalLent: 0.3`, not `0.30000000000000004`; and the summary's overdue total must equal the sum of the loans the list flags as overdue (SQL and JavaScript apply the same rule).
+
+**Checking the tests themselves: a test only proves something if it can fail.** We deliberately removed `userId` from the repay query (re-creating the IDOR bug). The IDOR test failed with `expected 200 to be 404`, so it really guards that bug. Then we restored the line exactly.
+
+**Tests are type-checked too.** `tsconfig.json` now covers `src/`, `tests/` and the config files; the build uses `tsconfig.build.json` so only `src/` ends up in `dist/`. This caught a real type mistake in a test table on the first run.
+
+**ESLint** reads code without running it and flags likely bugs (unused variables, unsafe patterns). It uses ESLint's and typescript-eslint's recommended rules and ignores generated code.
+
+**GitHub Actions CI.** On every push to `main` and every pull request, GitHub starts a clean Ubuntu machine with a throwaway Postgres 17 (same user, password, database name and port as `.env.test`, so no CI-only settings are needed), then runs `npm ci`, lint, typecheck, build and tests. A green tick or red cross appears next to each commit. `npm ci` (not `npm install`) installs exactly the versions in `package-lock.json`.
+
+**A fresh-clone check before committing.** We copied only the files Git would commit (no `.env`, no `node_modules`, no generated client) and ran the whole CI sequence there. It passed, which proves the repo works for someone who just cloned it.
+
+**A tool quirk we worked around:** Vitest 5 can crash while *displaying* an error thrown from global setup (`code.charCodeAt is not a function`), hiding the real message. The guard prints its message with `console.error` before throwing, so the reason is always visible.
+
+**What the tests don't cover** (say this honestly in the interview): the mobile app; a real SMS provider; token expiry after 7 days; load and performance; and we don't measure coverage. With more time: a test for expired tokens using fake timers, coverage reporting, and end-to-end tests of the app.
+
 ---
 
 ## 4. Commands
@@ -224,6 +291,10 @@ npm install                   # install packages + generate the Prisma client
 npm run db:migrate            # apply migrations (dev) + regenerate the client
 npm run dev                   # start the API with auto-restart on file changes
 curl.exe http://localhost:3000/health
+
+npm test                      # all 81 tests, against the miniledger_test database
+npm run lint                  # ESLint
+npm run typecheck             # TypeScript, app + tests
 ```
 
 On Windows PowerShell, type **`curl.exe`**, not `curl`: plain `curl` is an alias for PowerShell's `Invoke-WebRequest`, which behaves differently.
@@ -327,3 +398,32 @@ Indexes for the real queries (`user_id` already; `(user_id, due_date)` for sorti
 
 **Q: What would you add with one more week?**
 Partial repayments (a `repayments` table, with the balance calculated from it, which is how udhaar actually works for merchants), edit and delete with a history of changes, WhatsApp reminders, pagination, refresh tokens, and deployment with CI/CD.
+
+### Milestone 4: tests and CI
+
+**Q: What do your tests cover? What don't they?**
+81 tests. Unit: rupee/paise conversion, India's date at the midnight boundary, phone/amount/date/OTP validation, OTP hashing. Integration, through real HTTP and a real database: the whole OTP flow (wrong codes, the 5-attempt lock, a 10-request race, one-time use, expiry, cooldown, forged tokens) and loans (validation errors, overdue rules, ordering, idempotent repay, IDOR, summary maths). Not covered: the mobile app, a real SMS provider, token expiry after 7 days, performance, and coverage isn't measured.
+
+**Q: What's the difference between a unit test and an integration test?**
+A unit test checks one function in isolation, so it's fast and points straight at the broken piece. An integration test checks several pieces working together: here a real HTTP request goes through routing, validation, auth and SQL into a real database.
+
+**Q: Why test against a real database instead of mocking Prisma?**
+Because the important logic is in SQL: the summary query, the conditional UPDATEs, the CHECK constraint. A mocked database would only prove my mock behaves the way I assumed. The trade-off is that tests need Postgres running, which CI provides as a service container.
+
+**Q: The OTP is only printed in a log. How do your tests get it?**
+The test setup replaces the SMS function with a Vitest fake (`vi.fn()`) that records its arguments, and the tests read the code from the last call, like a Mockito mock in Spring. Only that edge is faked; the rest of the flow is real.
+
+**Q: Tests delete all rows before each test. How do you stop that from wiping real data?**
+They run against a separate `miniledger_test` database from `.env.test`, and the global setup refuses to start unless the database name ends in `_test`. I tested that guard against the dev database: it refused and the dev data was untouched.
+
+**Q: How do you know your tests actually test something?**
+I broke the code on purpose: removed the `user_id` check from the repay query. The IDOR test failed (`expected 200 to be 404`), then I restored it. A test that can't fail proves nothing.
+
+**Q: How do you test something that depends on today's date?**
+Overdue tests create due dates relative to today (`daysFromToday(-1)`), so they pass on any day. The timezone edge is tested on `todayInIndia(now)` directly with fixed instants: that's why the function takes `now` as a parameter instead of always reading the clock.
+
+**Q: What does your CI pipeline do, and why have one?**
+On every push and pull request, GitHub Actions spins up Ubuntu with a throwaway Postgres, runs `npm ci`, lint, typecheck, build and the tests, and marks the commit green or red. It catches "works on my machine" problems and stops a broken change from being merged unnoticed.
+
+**Q: What is `app.inject()`?**
+Fastify's way of sending a request straight into the app in memory, without a network port. It's why the tests are fast, and why `buildApp()` is separate from `server.ts`, which is the only place that calls `listen()`.

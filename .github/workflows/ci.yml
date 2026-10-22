@@ -1,0 +1,48 @@
+# Runs on every push to main and every pull request: lint, typecheck, build and test the API.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    name: Server (lint, typecheck, build, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    # A throwaway Postgres for the tests, set up to match server/.env.test.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: miniledger
+          POSTGRES_PASSWORD: miniledger
+          POSTGRES_DB: miniledger_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U miniledger -d miniledger_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      # npm ci installs exactly what package-lock.json says; postinstall generates the Prisma client.
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      # The tests apply the migrations to the test database themselves (tests/global-setup.ts).
+      - run: npm test

@@ -1,0 +1,11 @@
+{
+  // Compiles only the app (src/) into dist/, for `npm run build` and the Docker image.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true
+  },
+  "include": ["src"]
+}

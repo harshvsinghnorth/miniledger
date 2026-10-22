@@ -5,21 +5,29 @@ import { prisma } from "./db.js";
 import { authRoutes } from "./routes/auth.js";
 import { loanRoutes } from "./routes/loans.js";
 
-// Builds the app without starting it. server.ts calls listen() on it;
-// tests will call app.inject() instead, which sends fake requests without a real port.
-export function buildApp() {
-  const app = Fastify({
-    // On the laptop: readable, coloured log lines. In production: one JSON object
-    // per line, which log tools such as AWS CloudWatch can search and filter.
-    logger: config.isProduction
-      ? true
-      : {
-          transport: {
-            target: "pino-pretty",
-            options: { translateTime: "SYS:HH:MM:ss", ignore: "pid,hostname" },
-          },
-        },
-  });
+function loggerOptions(enabled: boolean) {
+  if (!enabled) {
+    return false;
+  }
+  // In production: one JSON object per line, which log tools such as
+  // AWS CloudWatch can search and filter.
+  if (config.isProduction) {
+    return true;
+  }
+  // On the laptop: readable, coloured log lines.
+  return {
+    transport: {
+      target: "pino-pretty",
+      options: { translateTime: "SYS:HH:MM:ss", ignore: "pid,hostname" },
+    },
+  };
+}
+
+// Builds the app without starting it. server.ts calls listen() on it; tests call
+// app.inject() instead, which sends requests straight in without a real port.
+// Tests pass { logger: false } to keep their output clean.
+export function buildApp({ logger = true }: { logger?: boolean } = {}) {
+  const app = Fastify({ logger: loggerOptions(logger) });
 
   // The one place where errors become HTTP responses.
   app.setErrorHandler<FastifyError>((error, request, reply) => {

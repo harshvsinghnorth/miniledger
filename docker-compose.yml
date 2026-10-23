@@ -1,3 +1,6 @@
+# docker compose up -d                        -> just Postgres (for `npm run dev` on the laptop)
+# docker compose --profile app up --build     -> Postgres + the API in a container
+
 services:
   db:
     image: postgres:17-alpine
@@ -21,5 +24,28 @@ services:
       timeout: 3s
       retries: 10
 
+  api:
+    build: ./server
+    container_name: miniledger-api
+    profiles: ["app"] # only started with --profile app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy # wait until Postgres accepts connections
+    environment:
+      # Inside Docker's network the database is reachable by its service name, "db".
+      DATABASE_URL: postgresql://miniledger:miniledger@db:5432/miniledger
+      HOST: 0.0.0.0
+      PORT: 3000
+      # Local-only defaults so this runs out of the box. Set real values in the shell
+      # (or a .env file next to this one) for anything beyond a laptop.
+      JWT_SECRET: ${JWT_SECRET:-local-docker-only-jwt-secret-change-me-0123456789}
+      OTP_SECRET: ${OTP_SECRET:-local-docker-only-otp-secret-change-me-0123456789}
+    ports:
+      - "3000:3000"
+    volumes:
+      - receipts:/app/uploads # receipt photos survive container rebuilds
+
 volumes:
   pgdata:
+  receipts:

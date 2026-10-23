@@ -1,0 +1,9 @@
+# Keep the image small and free of secrets: none of this belongs inside it.
+node_modules
+dist
+src/generated
+.env
+uploads
+uploads-test
+coverage
+tests

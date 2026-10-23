@@ -169,6 +169,9 @@ git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 1
 | `server/src/receipts.ts` | File rules for receipts: 5 MB limit, magic-byte detection (JPEG/PNG/WebP), random file names, saving and deleting. |
 | `server/tests/receipts.test.ts` | 10 tests: real image stored under a random name, a script disguised as a JPEG rejected, over 5 MB rejected, no upload or download for another user, replace deletes the old file, correct bytes and headers on download. |
 | `app/src/photos.ts` | `shrinkPhoto`: resizes to 1600 px on the longest side and re-saves as JPEG 70% before uploading. |
+| `server/Dockerfile` | Builds the API image in two stages (build, then a slim runtime), runs as the `node` user, applies migrations on start, has a `HEALTHCHECK`. |
+| `server/.dockerignore` | Keeps `node_modules`, `.env`, uploads, tests and build output out of the image. |
+| `README.md` | What the project is, how to run it, the API, the main decisions, and what's not done. |
 | `server/src/otp.ts` | Pure OTP helpers: generate a secure random code, HMAC-hash it, compare in constant time. Also the limits (5 min, 5 attempts, 30 s cooldown). |
 | `server/src/sms.ts` | The mock SMS sender: prints the code to the log. The single function a real SMS provider would replace. |
 | `server/src/auth.ts` | `signToken()` creates a JWT; `requireAuth` is the preHandler hook that protects routes and sets `request.userId`. |
@@ -435,6 +438,30 @@ Lesson: make failures visible. One clear log line beat two rounds of guessing.
 
 **Talking points (not built):** in production, store receipts in S3 (or similar) and hand the app short-lived *presigned URLs* instead of streaming through the API; strip EXIF metadata (phone photos can contain GPS location) by re-encoding on the server too; scan uploads for malware; and clean up any orphaned files with a periodic job.
 
+### Milestone 9: Docker and the README
+
+**Two-stage Dockerfile.** Stage 1 (`build`) installs *all* packages, generates the Prisma client and compiles TypeScript to `dist/`. Stage 2 starts from a fresh `node:22-bookworm-slim` and copies in only the production packages, `dist/`, and the Prisma schema and migrations. Compilers, test tools and source code stay behind in stage 1.
+
+**Layer caching.** `package.json` and `package-lock.json` are copied and installed *before* the source code. Docker reuses a layer if its inputs haven't changed, so editing code doesn't reinstall every package, only changing dependencies does.
+
+**`npm ci --ignore-scripts`, then `npm rebuild prisma @prisma/engines`.** Our own `postinstall` (`prisma generate`) isn't needed in the runtime image, because the client is already compiled into `dist/`. But skipping *all* scripts also skipped Prisma's download of its migration engine. The first container run failed with `Can't write to /app/node_modules/@prisma/engines`: Prisma tried to download it at startup as the non-root user. `npm rebuild` runs just Prisma's install step at build time, as root. (A real problem found by actually running the image.)
+
+**Runs as the `node` user, not root.** If someone found a hole in the app, they'd be an unprivileged user inside the container. That user owns only `uploads/`; we verified the receipt file is written as `node`.
+
+**Migrations on start:** `CMD` runs `prisma migrate deploy && node dist/server.js`. `migrate deploy` only applies committed migrations that haven't run (it never creates new ones), so restarting is safe. *Trade-off:* this keeps the Prisma CLI in the image, which is most of its ~1 GB size. In production, migrations would run as a separate release step in CI/CD, and the runtime image would shrink to the app plus `@prisma/client`.
+
+**`HEALTHCHECK`** calls our own `/health` route every 30 s, so `docker ps` shows `healthy` or `unhealthy`, and orchestrators (ECS, Kubernetes, `docker compose`) can restart a broken container. Because `/health` really queries Postgres, a lost database shows as unhealthy too.
+
+**OpenSSL** is installed in the runtime image because Prisma's migration engine needs it. The slim base image leaves it out.
+
+**`.dockerignore`** keeps `node_modules` (the image installs its own, for Linux), `.env` (secrets must never be baked into an image), uploads, tests and build output out of the build.
+
+**Compose profiles.** `docker compose up -d` still starts only Postgres, for everyday `npm run dev`. `docker compose --profile app up --build` adds the `api` service: it waits for Postgres to be *healthy* (`depends_on: condition: service_healthy`), reaches it by its service name (`db:5432`, Docker's internal DNS), and keeps receipts in a named volume so they survive rebuilds. Secrets come from the environment, with clearly marked local-only defaults so a reviewer can run it with one command.
+
+**Verified, not assumed:** we built the image, ran it against the test database, logged in using the OTP from its JSON log, created a loan, uploaded a receipt, and watched Docker mark it healthy. CI now has a third job that builds the image on every push.
+
+**The README** only claims what we verified: setup steps for the server, the app and Docker, environment variables, the API table, the key decisions in one paragraph each, an honest "what's not done" list, and a note on how AI was used.
+
 ---
 
 ## 4. Commands
@@ -665,3 +692,20 @@ Receipt upload failed with "Can't reach the server". My first guess, that the ph
 
 **Q: How would you roll back the receipt migration?**
 Migrations are forward-only, so I'd add a new one: `ALTER TABLE "loans" DROP COLUMN "receipt_path";`, and remove the files in `uploads/`. The original change was additive and nullable, so it was safe to apply on a live database.
+
+### Milestone 9: Docker and the README
+
+**Q: Walk me through your Dockerfile.**
+Two stages. The build stage installs all dependencies (the package files are copied first, so Docker caches that layer), generates the Prisma client and compiles TypeScript. The runtime stage is a fresh slim Node image with only production dependencies, the compiled `dist/`, and the Prisma schema and migrations. It installs OpenSSL for Prisma, creates the uploads folder, switches to the non-root `node` user, has a `HEALTHCHECK` on `/health`, and starts with `prisma migrate deploy && node dist/server.js`.
+
+**Q: Why two stages? Why not run as root?**
+Two stages keep compilers, dev tools and source out of the final image: smaller, and less to attack. Running as `node` means a compromised app process has no root inside the container.
+
+**Q: How do migrations run when you deploy?**
+In this setup, the container runs `prisma migrate deploy` on start. It only applies committed migrations that haven't run yet, so restarts are safe. For a real deployment I'd move that into a CI/CD release step before the new version starts, so several API instances don't race to migrate, and so the runtime image doesn't need the Prisma CLI.
+
+**Q: What problem did you hit with Docker?**
+The first run failed: Prisma couldn't write its migration engine into `node_modules` because I'd skipped install scripts and the container runs as a non-root user. I fixed it by running Prisma's install step at build time (`npm rebuild prisma @prisma/engines`). It only showed up because I ran the image instead of just building it.
+
+**Q: What would you change to deploy this on AWS?**
+Push the image to ECR and run it on ECS (or EC2) behind a load balancer with HTTPS, Postgres on RDS, receipts in S3 with presigned URLs, secrets in AWS Secrets Manager instead of environment defaults, logs to CloudWatch (they're already JSON), migrations as a pipeline step, and the `/health` check wired to the load balancer.

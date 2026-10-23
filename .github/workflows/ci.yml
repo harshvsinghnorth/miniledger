@@ -1,5 +1,5 @@
 # Runs on every push to main and every pull request: lint, typecheck, build and test the API,
-# and typecheck and bundle the mobile app.
+# typecheck and bundle the mobile app, and build the API's Docker image.
 name: CI
 
 on:
@@ -68,3 +68,11 @@ jobs:
       - run: npm run typecheck
       # Builds the JavaScript bundle the phone downloads, which catches import and syntax errors.
       - run: npx expo export --platform android --output-dir /tmp/expo-export
+
+  docker:
+    name: API Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Proves the Dockerfile still builds after every change.
+      - run: docker build --tag miniledger-api server

@@ -1,10 +1,20 @@
+import multipart from "@fastify/multipart";
 import type { FastifyInstance } from "fastify";
+import { createReadStream } from "node:fs";
 import { z } from "zod";
 import { requireAuth } from "../auth.js";
 import { toDateString, todayInIndia } from "../dates.js";
 import { prisma } from "../db.js";
 import type { Loan } from "../generated/prisma/client.js";
 import { paiseToRupees } from "../money.js";
+import {
+  MAX_RECEIPT_BYTES,
+  deleteReceipt,
+  detectImageType,
+  mimeTypeFor,
+  receiptFilePath,
+  saveReceipt,
+} from "../receipts.js";
 import { amountSchema, dueDateSchema, friendNameSchema, loanIdSchema } from "../validation.js";
 
 const createLoanBody = z.object({
@@ -38,11 +48,18 @@ function toLoanResponse(loan: Loan, today: string) {
     dueDate: toDateString(loan.dueDate),
     repaidAt: loan.repaidAt,
     isOverdue: isOverdue(loan, today),
+    // Where the app can fetch the photo (with its token). "v" changes with every new
+    // photo, so the phone's image cache never shows an old one.
+    receiptUrl: loan.receiptPath ? `/loans/${loan.id}/receipt?v=${loan.receiptPath.slice(0, 8)}` : null,
     createdAt: loan.createdAt,
   };
 }
 
 export async function loanRoutes(app: FastifyInstance) {
+  // Reads multipart/form-data (file uploads). The limits are enforced while the
+  // upload streams in, so a 2 GB file is cut off at 5 MB, not read into memory.
+  await app.register(multipart, { limits: { fileSize: MAX_RECEIPT_BYTES, files: 1 } });
+
   // Every route in this plugin needs a logged-in user. Fastify plugins are
   // encapsulated, so this hook doesn't affect routes registered outside it.
   app.addHook("preHandler", requireAuth);
@@ -87,6 +104,59 @@ export async function loanRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "Loan not found" });
     }
     return toLoanResponse(loan, todayInIndia());
+  });
+
+  // Attach (or replace) a receipt photo: multipart/form-data with one image file.
+  app.post("/loans/:id/receipt", async (request, reply) => {
+    const { id } = loanParams.parse(request.params);
+
+    // Ownership first: never accept a file for someone else's loan.
+    const loan = await prisma.loan.findFirst({ where: { id, userId: request.userId } });
+    if (!loan) {
+      return reply.code(404).send({ error: "Loan not found" });
+    }
+
+    const file = await request.file(); // the first file in the upload
+    if (!file) {
+      return reply.code(400).send({ error: "Attach a photo of the receipt" });
+    }
+
+    let data: Buffer;
+    try {
+      data = await file.toBuffer(); // throws as soon as the upload passes 5 MB
+    } catch (err) {
+      if (err instanceof app.multipartErrors.RequestFileTooLargeError) {
+        return reply.code(413).send({ error: "The photo must be 5 MB or smaller" });
+      }
+      throw err;
+    }
+
+    // Trust the file's first bytes, not its name or the type the client claims.
+    const type = detectImageType(data);
+    if (!type) {
+      return reply.code(415).send({ error: "The receipt must be a JPEG, PNG or WebP image" });
+    }
+
+    const fileName = await saveReceipt(data, type.ext);
+    const updated = await prisma.loan.update({ where: { id: loan.id }, data: { receiptPath: fileName } });
+    if (loan.receiptPath) {
+      await deleteReceipt(loan.receiptPath); // the old photo was replaced
+    }
+    return toLoanResponse(updated, todayInIndia());
+  });
+
+  // Send the photo back, only to the loan's owner. Files are never in a public folder.
+  app.get("/loans/:id/receipt", async (request, reply) => {
+    const { id } = loanParams.parse(request.params);
+    const loan = await prisma.loan.findFirst({ where: { id, userId: request.userId } });
+    if (!loan?.receiptPath) {
+      return reply.code(404).send({ error: "Receipt not found" });
+    }
+    return reply
+      .type(mimeTypeFor(loan.receiptPath))
+      .header("X-Content-Type-Options", "nosniff") // the browser must not guess a different type
+      .header("Cache-Control", "private, max-age=86400")
+      .send(createReadStream(receiptFilePath(loan.receiptPath)));
   });
 
   app.get("/loans/summary", async (request) => {

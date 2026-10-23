@@ -85,6 +85,19 @@ AddLoanScreen ── validate() in the app (instant) ── POST /loans { friend
               ── 400? server's field messages under each field;  201? close, toast, HomeScreen.load()
 ```
 
+### Request flow: receipt photos
+
+```
+Phone: Add receipt → Camera / Gallery (expo-image-picker)
+       shrinkPhoto: longest side 1600 px, JPEG 70%   (3000×4000 photo → ~200 KB)
+       FormData + new File(uri) (expo-file-system) ── POST /loans/:id/receipt  (multipart/form-data)
+Server: requireAuth → loan belongs to you? else 404 → read at most 5 MB (else 413)
+        first bytes are JPEG/PNG/WebP? else 415 → save as <random-uuid>.jpg → loans.receipt_path
+        → { …loan, receiptUrl: "/loans/7/receipt?v=1a2b3c4d" }
+Phone: expo-image <Image source={{ uri, headers: { Authorization }, cacheKey }}>
+        ── GET /loans/:id/receipt → owner only (else 404) → image/jpeg + nosniff
+```
+
 ### How the tests run
 
 ```
@@ -152,6 +165,10 @@ git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 1
 | `app/src/components/SummaryCard.tsx` | The three totals: Total lent, Repaid (green), Overdue (red, with the number of loans). |
 | `app/src/components/LoanRow.tsx` | One loan: name, amount, due label, OVERDUE badge and red styling, "Mark repaid" with its own spinner. |
 | `app/src/screens/AddLoanScreen.tsx` | The add-loan form: name, amount (₹, decimal pad), due date (picker + 1 week / 2 weeks / 1 month), instant checks, server field errors, past-date warning. |
+| `server/prisma/migrations/…_add_receipt/migration.sql` | The second migration: `ALTER TABLE "loans" ADD COLUMN "receipt_path" TEXT;` |
+| `server/src/receipts.ts` | File rules for receipts: 5 MB limit, magic-byte detection (JPEG/PNG/WebP), random file names, saving and deleting. |
+| `server/tests/receipts.test.ts` | 10 tests: real image stored under a random name, a script disguised as a JPEG rejected, over 5 MB rejected, no upload or download for another user, replace deletes the old file, correct bytes and headers on download. |
+| `app/src/photos.ts` | `shrinkPhoto`: resizes to 1600 px on the longest side and re-saves as JPEG 70% before uploading. |
 | `server/src/otp.ts` | Pure OTP helpers: generate a secure random code, HMAC-hash it, compare in constant time. Also the limits (5 min, 5 attempts, 30 s cooldown). |
 | `server/src/sms.ts` | The mock SMS sender: prints the code to the log. The single function a real SMS provider would replace. |
 | `server/src/auth.ts` | `signToken()` creates a JWT; `requireAuth` is the preHandler hook that protects routes and sets `request.userId`. |
@@ -388,6 +405,36 @@ The bug from the hospital project was trusting an id the client sent. Here, `use
 
 **Small touches:** the name field gets focus and capitalises words; the amount uses the decimal number pad with a ₹ prefix; a toast ("Added ₹1,500 lent to Rahul") confirms the save, since the form disappears; the empty list now says how to add the first loan.
 
+### Milestone 8: receipt photos
+
+**Receipts are private, so there's no public uploads folder.** The common shortcut is to serve the uploads folder as static files (`/uploads/abc.jpg`), but then anyone with the link sees the receipt: IDOR again, for files. Instead `GET /loans/:id/receipt` is a normal protected route: it checks the token and that the loan is yours (`WHERE id AND user_id`), or answers 404, and only then streams the file.
+
+**Four defences against "a 2 GB file or a script":**
+1. *Size:* `@fastify/multipart` enforces `fileSize: 5 MB` while the upload streams in, so a huge upload is cut off at 5 MB instead of being read into memory. The error becomes a friendly 413 ("The photo must be 5 MB or smaller").
+2. *Type, from the bytes:* the file name and the client's `Content-Type` are just claims. `detectImageType` checks the first bytes: JPEG starts `FF D8 FF`, PNG `89 50 4E 47 0D 0A 1A 0A`, WebP `RIFF….WEBP`. Anything else gets **415 Unsupported Media Type**. Tested with `<script>…</script>` named `receipt.jpg` and labelled `image/jpeg`: rejected, nothing written.
+3. *Our name, not theirs:* saved as `<random-uuid>.jpg`. The uploader's name could contain `../` (path traversal) or clash with another file.
+4. *Served as exactly what it is:* the response has `Content-Type: image/jpeg` (from the detected type) and `X-Content-Type-Options: nosniff`, so a browser never re-interprets it as HTML or JavaScript. `Cache-Control: private` keeps shared caches from storing it.
+
+**Ownership is checked before the file is read.** The upload route looks up the loan with your user id first, so a file sent for someone else's loan gets 404 and is never stored (tested).
+
+**Replacing a photo deletes the old file**, so the disk only holds current receipts. The delete is best-effort: a leftover file is harmless, so it never fails the request.
+
+**`receiptUrl` has a version in it** (`/loans/7/receipt?v=1a2b3c4d`, from the random file name). A new photo means a new URL, so the phone's image cache can never show the old one. The app also uses it as `expo-image`'s `cacheKey`.
+
+**A second migration, with a rollback plan.** `ALTER TABLE "loans" ADD COLUMN "receipt_path" TEXT;` is additive and nullable, so it's safe on a live database: existing rows just get `NULL`. To roll back: a new migration with `ALTER TABLE "loans" DROP COLUMN "receipt_path";`, and delete the files in `uploads/`. CredSetu's listing mentions preparing "migration and rollback steps".
+
+**Tests write to their own folder** (`UPLOADS_DIR=uploads-test` in `.env.test`), the same idea as the separate test database. The tests build the `multipart/form-data` body by hand (boundary line, part headers, raw bytes, closing boundary), which shows exactly what a phone sends.
+
+**On the phone: shrink before uploading.** Phone photos are big (the one we tested was 3000×4000). `shrinkPhoto` (`expo-image-manipulator`) resizes the longest side to 1600 px and saves as JPEG at 70% quality: still easy to read, a few hundred KB, quick on a hotspot. The picker uses `quality: 1` so the photo is compressed once, not twice. Uploads get a 60 s timeout instead of 10 s.
+
+**Debugging story: three real bugs, each found by reading logs, not guessing.** (This is the best answer to "tell me about a problem you solved".)
+1. *"Couldn't load your loans."* The server's `/health` said "Database unreachable", and `docker ps` showed the Postgres container `Exited (255)`: Docker Desktop had shut down and killed it. Data was safe on the volume. Fix: `restart: unless-stopped` in `docker-compose.yml`, so the database comes back whenever Docker starts.
+2. *"Couldn't upload the receipt."* My first guess (the photo is too big) was **wrong**, and making the upload smaller didn't fix it. So I added development-only logging of the *real* error in `api.ts`, and moved the API and Expo into terminals I could read. The log said `Unsupported FormDataPart implementation`, and the server log showed the request never arrived. In this Expo SDK, `fetch` is Expo's newer implementation, which rejects React Native's old `{ uri, name, type }` way of attaching a file (Expo's own test suite checks that it throws). Fix: attach a real file object, `new File(uri)` from `expo-file-system`.
+3. *Uploads worked, but thumbnails didn't show.* The server log had **401** for every `GET /loans/3/receipt`: React Native's built-in `<Image>` wasn't sending our `Authorization` header on Android. Fix: `expo-image`, which sends headers properly and caches images. The log then showed `200`.
+Lesson: make failures visible. One clear log line beat two rounds of guessing.
+
+**Talking points (not built):** in production, store receipts in S3 (or similar) and hand the app short-lived *presigned URLs* instead of streaming through the API; strip EXIF metadata (phone photos can contain GPS location) by re-encoding on the server too; scan uploads for malware; and clean up any orphaned files with a periodic job.
+
 ---
 
 ## 4. Commands
@@ -598,3 +645,23 @@ Because people record loans after the fact. The form warns in red that the loan 
 
 **Q: What happens if saving fails?**
 The form stays open with everything still filled in, shows why (a field error, "Can't reach the server", etc.), and the button is ready to retry. While a save is running, the button shows a spinner and ignores taps, so a loan can't be added twice by a double-tap.
+
+### Milestone 8: receipt photos
+
+**Q: How does the receipt upload work?**
+The phone picks or takes a photo, shrinks it to 1600 px JPEG, and sends it as `multipart/form-data` to `POST /loans/:id/receipt`. The server checks the token and that the loan is mine, reads at most 5 MB, checks the first bytes are a real JPEG/PNG/WebP, saves it under a random UUID name in `uploads/`, and stores that name in `loans.receipt_path`. The app shows it through a protected `GET /loans/:id/receipt`, sending the token in the image request.
+
+**Q: How do you stop someone uploading a 2 GB file or a script?**
+The size limit is enforced while streaming, so the upload is cut off at 5 MB (413). The type comes from the file's magic bytes, not its name or claimed type, so a script renamed `.jpg` is rejected (415); I have a test for exactly that. Files get random names (no path tricks), and they're served with the exact image type plus `nosniff`, so they can't run as a page.
+
+**Q: Why not just serve the uploads folder publicly?**
+Then anyone with a link could see someone's receipt: IDOR for files. The download is a normal protected route that checks the token and ownership. In production I'd move to S3 with short-lived presigned URLs, which keeps files private without streaming them through the API.
+
+**Q: Why shrink the photo on the phone?**
+Phone photos are thousands of pixels wide and often several MB. 1600 px is plenty to read a receipt, the file drops to a few hundred KB, and it uploads quickly on a weak connection, which matters for users on mobile data.
+
+**Q: Tell me about a bug you found and how you debugged it.**
+Receipt upload failed with "Can't reach the server". My first guess, that the photo was too big, was wrong. So I logged the real underlying error in development, and the log said `Unsupported FormDataPart implementation`, while the server log showed the request never arrived. Expo's newer `fetch` doesn't accept React Native's old `{ uri, name, type }` file format, which I confirmed in Expo's source and tests. I switched to a real `File` from `expo-file-system`. Then the server log showed 401s for the thumbnails, because React Native's `<Image>` wasn't sending the auth header, and switching to `expo-image` fixed it. The lesson: read the logs before guessing.
+
+**Q: How would you roll back the receipt migration?**
+Migrations are forward-only, so I'd add a new one: `ALTER TABLE "loans" DROP COLUMN "receipt_path";`, and remove the files in `uploads/`. The original change was additive and nullable, so it was safe to apply on a live database.

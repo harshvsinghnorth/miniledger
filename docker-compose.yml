@@ -2,6 +2,8 @@ services:
   db:
     image: postgres:17-alpine
     container_name: miniledger-db
+    # Start again automatically whenever Docker Desktop starts (unless we stopped it ourselves).
+    restart: unless-stopped
     environment:
       POSTGRES_USER: miniledger
       POSTGRES_PASSWORD: miniledger

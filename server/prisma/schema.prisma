@@ -40,6 +40,7 @@ model Loan {
   amountPaise Int       @map("amount_paise") // money as whole paise, never a float
   dueDate     DateTime  @map("due_date") @db.Date
   repaidAt    DateTime? @map("repaid_at") @db.Timestamptz // NULL = not repaid yet
+  receiptPath String?   @map("receipt_path") // file name inside the uploads folder; NULL = no receipt
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
 
   @@index([userId])

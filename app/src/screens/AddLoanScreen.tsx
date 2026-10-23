@@ -1,4 +1,4 @@
-import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -50,11 +50,10 @@ export function AddLoanScreen({ token, onCancel, onSaved, onSessionExpired }: Pr
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  function onPickDate(event: DateTimePickerEvent, picked?: Date) {
-    setShowPicker(false); // on Android the dialog closes itself; stop rendering it
-    if (event.type === "set" && picked) {
-      setDueDate(toIsoDate(picked));
-    }
+  // The user tapped OK. (On Android the dialog closes itself; stop rendering it.)
+  function onPickDate(picked: Date) {
+    setShowPicker(false);
+    setDueDate(toIsoDate(picked));
   }
 
   async function save() {
@@ -172,7 +171,12 @@ export function AddLoanScreen({ token, onCancel, onSaved, onSessionExpired }: Pr
 
       {/* Past dates are allowed on purpose: you can record a loan you gave earlier. */}
       {showPicker ? (
-        <DateTimePicker value={fromIsoDate(dueDate)} mode="date" onChange={onPickDate} />
+        <DateTimePicker
+          value={fromIsoDate(dueDate)}
+          mode="date"
+          onValueChange={(_event, picked) => onPickDate(picked)}
+          onDismiss={() => setShowPicker(false)}
+        />
       ) : null}
     </SafeAreaView>
   );

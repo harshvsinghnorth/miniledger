@@ -1,4 +1,6 @@
 import { useNetInfo } from "@react-native-community/netinfo";
+import { Image } from "expo-image"; // sends the Authorization header for receipts
+import * as ImagePicker from "expo-image-picker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -14,11 +16,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { ApiError, api, type Loan, type Summary } from "../api";
+import { ApiError, api, receiptImageSource, type Loan, type Summary } from "../api";
 import { LinkButton, PrimaryButton } from "../components/Button";
 import { LoanRow } from "../components/LoanRow";
 import { SummaryCard } from "../components/SummaryCard";
 import { dateInIndia, formatRupees } from "../format";
+import { shrinkPhoto } from "../photos";
 import { colors, spacing } from "../theme";
 import { AddLoanScreen } from "./AddLoanScreen";
 
@@ -44,6 +47,8 @@ export function HomeScreen({ token, onLogout }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [repayingId, setRepayingId] = useState<number | null>(null);
   const [adding, setAdding] = useState(false); // the add-loan form is open
+  const [uploadingId, setUploadingId] = useState<number | null>(null);
+  const [viewing, setViewing] = useState<Loan | null>(null); // the receipt shown full screen
   const { isConnected } = useNetInfo(); // true, false, or null while still checking
 
   // Fetch the list and the summary at the same time.
@@ -105,11 +110,60 @@ export function HomeScreen({ token, onLogout }: Props) {
     }
   }
 
+  function toast(message: string) {
+    if (Platform.OS === "android") {
+      ToastAndroid.show(message, ToastAndroid.SHORT);
+    }
+  }
+
   function onLoanSaved(loan: Loan) {
     setAdding(false);
     load(); // the new loan appears in its place in the list, and the totals update
-    if (Platform.OS === "android") {
-      ToastAndroid.show(`Added ${formatRupees(loan.amount)} lent to ${loan.friendName}`, ToastAndroid.SHORT);
+    toast(`Added ${formatRupees(loan.amount)} lent to ${loan.friendName}`);
+  }
+
+  function chooseReceipt(loan: Loan) {
+    Alert.alert("Receipt photo", `For the ${formatRupees(loan.amount)} lent to ${loan.friendName}`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Gallery", onPress: () => uploadReceipt(loan, "gallery") },
+      { text: "Camera", onPress: () => uploadReceipt(loan, "camera") },
+    ]);
+  }
+
+  async function uploadReceipt(loan: Loan, source: "camera" | "gallery") {
+    if (source === "camera") {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Camera access needed", "Allow camera access to photograph the receipt, or choose one from the gallery.");
+        return;
+      }
+    }
+    // quality 1 = no compression here; shrinkPhoto resizes and compresses it once, below.
+    const options: ImagePicker.ImagePickerOptions = { mediaTypes: ["images"], quality: 1 };
+    const result =
+      source === "camera" ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
+    if (result.canceled) {
+      return;
+    }
+
+    setViewing(null);
+    setUploadingId(loan.id);
+    try {
+      const photoUri = await shrinkPhoto(result.assets[0]);
+      await api.uploadReceipt(token, loan.id, photoUri);
+      await load(); // the row now shows the thumbnail
+      toast("Receipt saved");
+    } catch (err) {
+      if (__DEV__) {
+        console.warn("Receipt upload failed:", err);
+      }
+      if (err instanceof ApiError && err.status === 401) {
+        onLogout();
+        return;
+      }
+      Alert.alert("Couldn't upload the receipt", errorMessage(err));
+    } finally {
+      setUploadingId(null);
     }
   }
 
@@ -173,9 +227,13 @@ export function HomeScreen({ token, onLogout }: Props) {
         renderItem={({ item }) => (
           <LoanRow
             loan={item}
+            token={token}
             today={today}
             repaying={repayingId === item.id}
+            uploading={uploadingId === item.id}
             onMarkRepaid={confirmMarkRepaid}
+            onAddReceipt={chooseReceipt}
+            onViewReceipt={setViewing}
           />
         )}
         ListHeaderComponent={
@@ -220,6 +278,27 @@ export function HomeScreen({ token, onLogout }: Props) {
           />
         </SafeAreaProvider>
       </Modal>
+
+      {/* Full-screen receipt. Android's back button closes it. */}
+      <Modal visible={viewing !== null} transparent animationType="fade" onRequestClose={() => setViewing(null)}>
+        <View style={styles.viewer}>
+          {viewing?.receiptUrl ? (
+            <Image
+              source={receiptImageSource(token, viewing.receiptUrl)}
+              style={styles.viewerImage}
+              contentFit="contain"
+            />
+          ) : null}
+          <View style={styles.viewerActions}>
+            <Pressable accessibilityRole="button" onPress={() => viewing && chooseReceipt(viewing)} hitSlop={8}>
+              <Text style={styles.viewerButton}>Replace</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" onPress={() => setViewing(null)} hitSlop={8}>
+              <Text style={styles.viewerButton}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -251,6 +330,14 @@ const styles = StyleSheet.create({
   },
   addButtonText: { color: colors.primaryText, fontSize: 16, fontWeight: "700" },
   pressed: { opacity: 0.85 },
+  viewer: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.92)", justifyContent: "center" },
+  viewerImage: { width: "100%", height: "80%" },
+  viewerActions: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingVertical: spacing.lg,
+  },
+  viewerButton: { color: colors.primaryText, fontSize: 17, fontWeight: "600" },
   banner: { backgroundColor: "#FEF3C7", borderRadius: 10, padding: spacing.sm, marginBottom: spacing.md },
   bannerText: { color: "#92400E", fontSize: 14 },
   sectionTitle: { fontSize: 16, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },

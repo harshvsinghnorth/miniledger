@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 // All settings come from environment variables, read once at startup.
 // A missing required value stops the server immediately with a clear error,
 // instead of failing later in a confusing way.
@@ -26,4 +28,6 @@ export const config = {
   databaseUrl: required("DATABASE_URL"),
   jwtSecret: secret("JWT_SECRET"),
   otpSecret: secret("OTP_SECRET"),
+  // Folder for receipt photos (relative paths are relative to the server folder).
+  uploadsDir: resolve(process.env["UPLOADS_DIR"] ?? "uploads"),
 };

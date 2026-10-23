@@ -10,6 +10,7 @@ server/src/generated/
 
 # Receipt uploads (bonus feature)
 server/uploads/
+server/uploads-test/
 
 # Expo
 .expo/

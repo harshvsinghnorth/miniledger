@@ -6,6 +6,14 @@ A small app to track money you've lent to friends. Log in with your phone number
 
 It's an Android app built with **React Native (Expo)**, talking to an API built with **Node.js, TypeScript, Fastify, Prisma and PostgreSQL**. Built as the take-home assignment for CredSetu's Full Stack Development internship.
 
+## Screenshots
+
+| Log in | Loans and summary | Add a loan | Receipt photo |
+|---|---|---|---|
+| <img src="docs/screenshots/login.jpeg" width="200" alt="Login screen with a +91 phone number field"> | <img src="docs/screenshots/home.jpeg" width="200" alt="Summary card and loan list, with an overdue loan highlighted in red"> | <img src="docs/screenshots/add-loan.jpeg" width="200" alt="Add-loan form warning that a past due date will show as overdue"> | <img src="docs/screenshots/receipt.jpeg" width="200" alt="A receipt photo shown full screen"> |
+
+Taken on an Android phone in Expo Go (the grey gear is Expo's developer menu). Personal details in the sample receipt are blacked out.
+
 ---
 
 ## Features

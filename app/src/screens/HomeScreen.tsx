@@ -5,11 +5,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
+  Linking,
   Modal,
   Platform,
   Pressable,
   RefreshControl,
+  SectionList,
   StyleSheet,
   Text,
   ToastAndroid,
@@ -19,8 +20,9 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { ApiError, api, receiptImageSource, type Loan, type Summary } from "../api";
 import { LinkButton, PrimaryButton } from "../components/Button";
 import { LoanRow } from "../components/LoanRow";
+import { Logo } from "../components/Logo";
 import { SummaryCard } from "../components/SummaryCard";
-import { dateInIndia, formatRupees } from "../format";
+import { dateInIndia, formatPhone, formatRupees, reminderMessage } from "../format";
 import { shrinkPhoto } from "../photos";
 import { colors, spacing } from "../theme";
 import { AddLoanScreen } from "./AddLoanScreen";
@@ -49,7 +51,16 @@ export function HomeScreen({ token, onLogout }: Props) {
   const [adding, setAdding] = useState(false); // the add-loan form is open
   const [uploadingId, setUploadingId] = useState<number | null>(null);
   const [viewing, setViewing] = useState<Loan | null>(null); // the receipt shown full screen
+  const [phone, setPhone] = useState<string | null>(null); // shown in the header
   const { isConnected } = useNetInfo(); // true, false, or null while still checking
+
+  // Whose ledger this is, for the header. Failures are ignored: load() handles a 401.
+  useEffect(() => {
+    api
+      .me(token)
+      .then((user) => setPhone(user.phone))
+      .catch(() => undefined);
+  }, [token]);
 
   // Fetch the list and the summary at the same time.
   const load = useCallback(async () => {
@@ -107,6 +118,17 @@ export function HomeScreen({ token, onLogout }: Props) {
       Alert.alert("Couldn't mark as repaid", errorMessage(err));
     } finally {
       setRepayingId(null);
+    }
+  }
+
+  // Opens WhatsApp with a ready-made message. We don't store friends' numbers, so a
+  // wa.me link with only text lets the user pick the chat in WhatsApp itself.
+  async function remind(loan: Loan) {
+    const message = reminderMessage(loan, dateInIndia(new Date()));
+    try {
+      await Linking.openURL(`https://wa.me/?text=${encodeURIComponent(message)}`);
+    } catch {
+      Alert.alert("Couldn't open WhatsApp", "Check that WhatsApp is installed on this phone.");
     }
   }
 
@@ -174,7 +196,13 @@ export function HomeScreen({ token, onLogout }: Props) {
 
   const header = (
     <View style={styles.header}>
-      <Text style={styles.title}>MiniLedger</Text>
+      <View style={styles.brand}>
+        <Logo size={36} />
+        <View>
+          <Text style={styles.title}>MiniLedger</Text>
+          {phone ? <Text style={styles.subtitle}>{formatPhone(phone)}</Text> : null}
+        </View>
+      </View>
       <LinkButton title="Log out" onPress={onLogout} />
     </View>
   );
@@ -218,11 +246,19 @@ export function HomeScreen({ token, onLogout }: Props) {
 
   const today = dateInIndia(new Date());
 
+  // Group the server's list (already in order) under three headings. Empty groups are left out.
+  // Only counts here: money totals come from the server's summary.
+  const sections = [
+    { key: "overdue", title: "Overdue", data: data.loans.filter((loan) => loan.isOverdue) },
+    { key: "upcoming", title: "Upcoming", data: data.loans.filter((loan) => !loan.isOverdue && loan.repaidAt === null) },
+    { key: "repaid", title: "Repaid", data: data.loans.filter((loan) => loan.repaidAt !== null) },
+  ].filter((section) => section.data.length > 0);
+
   return (
     <SafeAreaView style={styles.screen}>
       {header}
-      <FlatList
-        data={data.loans}
+      <SectionList
+        sections={sections}
         keyExtractor={(loan) => String(loan.id)}
         renderItem={({ item }) => (
           <LoanRow
@@ -232,10 +268,17 @@ export function HomeScreen({ token, onLogout }: Props) {
             repaying={repayingId === item.id}
             uploading={uploadingId === item.id}
             onMarkRepaid={confirmMarkRepaid}
+            onRemind={remind}
             onAddReceipt={chooseReceipt}
             onViewReceipt={setViewing}
           />
         )}
+        renderSectionHeader={({ section }) => (
+          <Text style={[styles.sectionTitle, section.key === "overdue" && styles.sectionOverdue]}>
+            {section.title.toUpperCase()} · {section.data.length}
+          </Text>
+        )}
+        stickySectionHeadersEnabled={false}
         ListHeaderComponent={
           <>
             {banner ? (
@@ -244,7 +287,6 @@ export function HomeScreen({ token, onLogout }: Props) {
               </View>
             ) : null}
             <SummaryCard summary={data.summary} />
-            <Text style={styles.sectionTitle}>Your loans</Text>
           </>
         }
         ListEmptyComponent={
@@ -312,7 +354,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
-  title: { fontSize: 24, fontWeight: "800", color: colors.primary },
+  brand: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  title: { fontSize: 22, fontWeight: "800", color: colors.primary },
+  subtitle: { fontSize: 13, color: colors.muted },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.lg },
   errorTitle: { fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },
   errorText: { fontSize: 15, color: colors.muted, textAlign: "center" },
@@ -340,7 +384,15 @@ const styles = StyleSheet.create({
   viewerButton: { color: colors.primaryText, fontSize: 17, fontWeight: "600" },
   banner: { backgroundColor: "#FEF3C7", borderRadius: 10, padding: spacing.sm, marginBottom: spacing.md },
   bannerText: { color: "#92400E", fontSize: 14 },
-  sectionTitle: { fontSize: 16, fontWeight: "700", color: colors.text, marginBottom: spacing.sm },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    color: colors.muted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  sectionOverdue: { color: colors.danger },
   empty: { alignItems: "center", paddingVertical: spacing.xl },
   emptyTitle: { fontSize: 17, fontWeight: "700", color: colors.text },
   emptyText: { fontSize: 14, color: colors.muted, marginTop: spacing.xs, textAlign: "center" },

@@ -3,7 +3,9 @@ import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } fr
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ApiError, api } from "../api";
 import { LinkButton, PrimaryButton } from "../components/Button";
+import { Logo } from "../components/Logo";
 import { TextField } from "../components/TextField";
+import { formatPhone } from "../format";
 import { colors, spacing } from "../theme";
 
 const RESEND_SECONDS = 30; // matches the server's cooldown
@@ -26,11 +28,6 @@ function messageFrom(err: unknown, field: string): string {
       : "Incorrect OTP. No attempts left: request a new code.";
   }
   return err.message;
-}
-
-// "9876543210" -> "+91 98765 43210"
-function formatPhone(digits: string): string {
-  return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
 }
 
 export function LoginScreen({ onLoggedIn }: Props) {
@@ -103,6 +100,9 @@ export function LoginScreen({ onLoggedIn }: Props) {
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <View style={styles.logo}>
+            <Logo size={64} />
+          </View>
           <Text style={styles.title}>MiniLedger</Text>
           <Text style={styles.subtitle}>Keep track of money you've lent to friends.</Text>
 
@@ -169,6 +169,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   flex: { flex: 1 },
   content: { flexGrow: 1, justifyContent: "center", padding: spacing.lg },
+  logo: { alignItems: "center", marginBottom: spacing.md },
   title: { fontSize: 32, fontWeight: "800", color: colors.primary, textAlign: "center" },
   subtitle: { fontSize: 15, color: colors.muted, textAlign: "center", marginTop: spacing.xs, marginBottom: spacing.xl },
   card: { backgroundColor: colors.card, borderRadius: 16, padding: spacing.lg, elevation: 2 },

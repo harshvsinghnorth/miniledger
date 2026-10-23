@@ -29,6 +29,8 @@ Taken on an Android phone in Expo Go (the grey gear is Expo's developer menu). P
 - **Validation and tests.** Every request body is checked with zod, and errors come back per field and appear under the right input in the app. 91 automated tests run against a real Postgres test database, and GitHub Actions runs them on every push.
 
 **Extras**
+- **WhatsApp reminders.** A **Remind** button on unpaid loans opens WhatsApp with a polite, ready-made message ("Hi Priya, a friendly reminder about the ₹1,200 I lent you. It was due on 19 Oct 2026…"). You choose the chat; nothing is sent without your tap.
+- The list is grouped into **Overdue**, **Upcoming** and **Repaid**, each with a count.
 - Loading, error (with retry), empty and **offline** states. Offline, the app keeps showing the last data with a banner, and refreshes itself when the connection returns.
 - Indian formatting: `₹1,25,000`, `+91 98765 43210`, and "today" means today in India (IST).
 - A Dockerfile for the API, and a one-command way to run the whole backend in Docker.
@@ -67,7 +69,7 @@ miniledger/
 │   ├── App.tsx               logged in? → Home, else → Login
 │   └── src/
 │       ├── screens/          LoginScreen, HomeScreen, AddLoanScreen
-│       ├── components/       SummaryCard, LoanRow, TextField, Button
+│       ├── components/       SummaryCard, LoanRow, TextField, Button, Logo
 │       ├── api.ts            the only place that calls fetch
 │       └── config.ts, session.ts, format.ts, photos.ts, theme.ts
 └── docs/LEARNING_NOTES.md    how and why everything is built the way it is
@@ -231,7 +233,7 @@ The full reasoning, with trade-offs, is in [`docs/LEARNING_NOTES.md`](docs/LEARN
 ## What I'd build next
 
 1. **Partial repayments.** A `repayments` table, with each loan's balance calculated from it, which is how udhaar works for shops.
-2. **WhatsApp payment reminders** for overdue loans.
+2. **Automatic reminders.** Today "Remind" is a manual tap. Next would be scheduled reminders through a messaging provider, with the friend's number saved on the loan.
 3. **Editing and deleting**, with a history of changes so disputes have a trail.
 4. **Saving data on the phone**, so the app works fully offline and syncs later.
 5. **Deployment:** the API on AWS (EC2 or ECS, RDS for Postgres, S3 with presigned URLs for receipts), refresh tokens, per-IP rate limiting, and an installable APK.

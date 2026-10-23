@@ -169,6 +169,7 @@ git push ──► GitHub Actions: fresh Ubuntu machine + a throwaway Postgres 1
 | `server/src/receipts.ts` | File rules for receipts: 5 MB limit, magic-byte detection (JPEG/PNG/WebP), random file names, saving and deleting. |
 | `server/tests/receipts.test.ts` | 10 tests: real image stored under a random name, a script disguised as a JPEG rejected, over 5 MB rejected, no upload or download for another user, replace deletes the old file, correct bytes and headers on download. |
 | `app/src/photos.ts` | `shrinkPhoto`: resizes to 1600 px on the longest side and re-saves as JPEG 70% before uploading. |
+| `app/src/components/Logo.tsx` | The brand mark (white ₹ on a teal tile), drawn with a View and Text, used on login and in the home header. Same design as the app icon in `app/assets/`. |
 | `server/Dockerfile` | Builds the API image in two stages (build, then a slim runtime), runs as the `node` user, applies migrations on start, has a `HEALTHCHECK`. |
 | `server/.dockerignore` | Keeps `node_modules`, `.env`, uploads, tests and build output out of the image. |
 | `README.md` | What the project is, how to run it, the API, the main decisions, and what's not done. |
@@ -462,6 +463,19 @@ Lesson: make failures visible. One clear log line beat two rounds of guessing.
 
 **The README** only claims what we verified: setup steps for the server, the app and Docker, environment variables, the API table, the key decisions in one paragraph each, an honest "what's not done" list, and a note on how AI was used.
 
+### Final polish: brand, sections, WhatsApp reminder
+
+**Thinking like the reviewer.** The first seconds of the video showed Expo's generic template icon, a plain-text name, and a header that didn't say whose ledger it was. It worked, but it looked like a template. So: a brand mark (white ₹ on the app's teal) as the app icon and on screen, and the logged-in number in the header.
+
+**The icon was drawn with code**, not downloaded: a short script drew each Android icon layer (background, foreground with the ₹ inside the safe zone, monochrome) at the sizes the template used. In the app, `Logo` is a `View` with a `Text`, so there's no image to load. `includeFontPadding: false` stops Android's extra space above text from pushing the ₹ off-centre.
+
+**Sections with a `SectionList`.** The server already sends loans in order (unpaid by due date, then repaid); the app only splits them into Overdue / Upcoming / Repaid using the server's `isOverdue` and `repaidAt`. Headers show **counts, not money**: totals stay with the server's summary, so the rule "the phone never calculates money" still holds.
+
+**WhatsApp reminder.** Reminders are the core of every udhaar app (Khatabook, OkCredit). The simplest honest version: `Linking.openURL("https://wa.me/?text=" + encodeURIComponent(message))`. With no phone number in the link, WhatsApp lets the user choose the chat, so we don't need to store friends' numbers, and nothing is sent without the user's tap. `encodeURIComponent` matters: spaces, commas and the ₹ sign (`%E2%82%B9`) must be escaped to survive inside a URL. The message changes with the date: "is due on 30 Oct", "is due today", or "It was due on 19 Oct… Could you pay it back when you can?".
+*Trade-off:* it's manual. Automatic reminders would need the friend's number on the loan and a provider like the WhatsApp Business API or SMS, plus a scheduler.
+
+**Then the code freezes** before the video: every change after this point is a risk on camera.
+
 ---
 
 ## 4. Commands
@@ -706,6 +720,12 @@ In this setup, the container runs `prisma migrate deploy` on start. It only appl
 
 **Q: What problem did you hit with Docker?**
 The first run failed: Prisma couldn't write its migration engine into `node_modules` because I'd skipped install scripts and the container runs as a non-root user. I fixed it by running Prisma's install step at build time (`npm rebuild prisma @prisma/engines`). It only showed up because I ran the image instead of just building it.
+
+**Q: How does the WhatsApp reminder work?**
+It builds a polite message from the loan (name, amount in ₹, due date, and whether it's overdue) and opens `https://wa.me/?text=<message>` with `Linking.openURL`. The text is URL-encoded so spaces and the ₹ sign survive. With no number in the link, WhatsApp asks which chat to send it to, so the app doesn't need friends' numbers, and nothing is sent automatically. Automatic reminders would need numbers, a provider and a scheduler.
+
+**Q: Why are the section headers counts and not totals?**
+Because money totals come from the server's summary query, and I didn't want the phone adding up money itself. Grouping is presentation; the rule for "overdue" still comes from the server's `isOverdue`.
 
 **Q: What would you change to deploy this on AWS?**
 Push the image to ECR and run it on ECS (or EC2) behind a load balancer with HTTPS, Postgres on RDS, receipts in S3 with presigned URLs, secrets in AWS Secrets Manager instead of environment defaults, logs to CloudWatch (they're already JSON), migrations as a pipeline step, and the `/health` check wired to the load balancer.

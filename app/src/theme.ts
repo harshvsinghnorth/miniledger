@@ -10,6 +10,7 @@ export const colors = {
   danger: "#B91C1C",
   dangerBackground: "#FEF2F2",
   success: "#15803D",
+  whatsapp: "#128C7E", // WhatsApp's own green, so "Remind" reads as "opens WhatsApp"
 };
 
 export const spacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 32 };

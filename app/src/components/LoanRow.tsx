@@ -13,6 +13,7 @@ type Props = {
   repaying: boolean; // this row's "Mark repaid" request is running
   uploading: boolean; // this row's receipt upload is running
   onMarkRepaid: (loan: Loan) => void;
+  onRemind: (loan: Loan) => void;
   onAddReceipt: (loan: Loan) => void;
   onViewReceipt: (loan: Loan) => void;
 };
@@ -20,7 +21,17 @@ type Props = {
 // One loan in the list. Overdue loans get a red edge, a red tint and a badge,
 // so they stand out even when scrolling quickly. Whether a loan is overdue is the
 // server's decision (loan.isOverdue), so the list and the summary always agree.
-export function LoanRow({ loan, token, today, repaying, uploading, onMarkRepaid, onAddReceipt, onViewReceipt }: Props) {
+export function LoanRow({
+  loan,
+  token,
+  today,
+  repaying,
+  uploading,
+  onMarkRepaid,
+  onRemind,
+  onAddReceipt,
+  onViewReceipt,
+}: Props) {
   const repaid = loan.repaidAt !== null;
   return (
     <View style={[styles.row, loan.isOverdue && styles.overdueRow, repaid && styles.repaidRow]}>
@@ -55,6 +66,17 @@ export function LoanRow({ loan, token, today, repaying, uploading, onMarkRepaid,
             ) : (
               <Text style={styles.actionText}>Mark repaid</Text>
             )}
+          </Pressable>
+        ) : null}
+
+        {!repaid ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remind ${loan.friendName} on WhatsApp`}
+            onPress={() => onRemind(loan)}
+            style={({ pressed }) => [styles.actionButton, styles.remindButton, pressed && styles.pressed]}
+          >
+            <Text style={styles.remindText}>Remind</Text>
           </Pressable>
         ) : null}
 
@@ -101,19 +123,22 @@ const styles = StyleSheet.create({
   repaidText: { color: colors.success },
   badge: { backgroundColor: colors.danger, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   badgeText: { color: colors.primaryText, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
-  actions: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.sm },
+  // flexWrap: on a narrow phone the buttons move to a second line instead of overflowing.
+  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: spacing.sm, marginTop: spacing.sm },
   actionButton: {
     borderWidth: 1,
     borderColor: colors.primary,
     borderRadius: 8,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    minWidth: 110,
+    minWidth: 64,
     minHeight: 34,
     alignItems: "center",
     justifyContent: "center",
   },
   secondaryButton: { borderColor: colors.border },
+  remindButton: { borderColor: colors.whatsapp },
+  remindText: { color: colors.whatsapp, fontWeight: "600", fontSize: 14 },
   pressed: { opacity: 0.7 },
   actionText: { color: colors.primary, fontWeight: "600", fontSize: 14 },
   secondaryText: { color: colors.text, fontWeight: "600", fontSize: 14 },

@@ -68,6 +68,25 @@ function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
+// "+919876543210" or "9876543210" -> "+91 98765 43210"
+export function formatPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, "").slice(-10);
+  return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+}
+
+// A polite WhatsApp reminder with the amount and the due date.
+export function reminderMessage(loan: { friendName: string; amount: number; dueDate: string }, today: string): string {
+  const amount = formatRupees(loan.amount);
+  const days = daysBetween(today, loan.dueDate);
+  if (days < 0) {
+    return `Hi ${loan.friendName}, a friendly reminder about the ${amount} I lent you. It was due on ${formatDate(loan.dueDate)}. Could you pay it back when you can? Thanks!`;
+  }
+  if (days === 0) {
+    return `Hi ${loan.friendName}, a friendly reminder that the ${amount} I lent you is due today. Thanks!`;
+  }
+  return `Hi ${loan.friendName}, a friendly reminder that the ${amount} I lent you is due on ${formatDate(loan.dueDate)}. Thanks!`;
+}
+
 // The line under a friend's name: "Overdue by 3 days", "Due tomorrow", "Repaid on 22 Oct 2026"...
 export function dueLabel(loan: { dueDate: string; repaidAt: string | null }, today: string): string {
   if (loan.repaidAt) {
